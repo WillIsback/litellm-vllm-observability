@@ -128,10 +128,10 @@ def render() -> str:
         for tg, b in sorted(hist.items()):
             for le, n in zip(BUCKETS, b):
                 lines.append(f'canary_ttft_seconds_bucket{{target="{tg}",le="{le:g}"}} {n}')
-            lines.append(f'canary_ttft_seconds_bucket{{target="{tg}",le="+Inf"}} {b[-1]}')
-            lines.append(f'canary_ttft_seconds_sum{{target="{tg}"}} {hsum[tg]:.6f}')
-            lines.append(f'canary_ttft_seconds_count{{target="{tg}"}} {b[-1]}')
-        lines += ["# HELP canary_requests_total Sondes envoyées, par statut.", "# TYPE canary_requests_total counter"]
+            lines.extend([f'canary_ttft_seconds_bucket{{target="{tg}",le="+Inf"}} {b[-1]}',
+                          f'canary_ttft_seconds_sum{{target="{tg}"}} {hsum[tg]:.6f}',
+                          f'canary_ttft_seconds_count{{target="{tg}"}} {b[-1]}'])
+        lines.extend(["# HELP canary_requests_total Sondes envoyées, par statut.", "# TYPE canary_requests_total counter"])
         for (tg, st), n in sorted(count.items()):
             lines.append(f'canary_requests_total{{target="{tg}",status="{st}"}} {n}')
         for metric, key, help_ in (("canary_last_ttft_seconds", "ttft", "TTFT de la dernière sonde terminée."),
@@ -154,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, *a):
-        pass
+        pass  # un scrape toutes les 15 s : pas de journal d'accès
 
 
 def main():
@@ -164,7 +164,8 @@ def main():
         threading.Thread(target=scheduler, args=(targets,), daemon=True).start()
     else:
         print("CANARY_TARGETS vide : sonde inactive (métriques vides).", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", 9105), Handler).serve_forever()
+    # /metrics en clair, comme tout exporter Prometheus : le port n'est pas publié, seul le réseau Docker du compose y accède
+    ThreadingHTTPServer(("0.0.0.0", 9105), Handler).serve_forever()  # NOSONAR
 
 
 if __name__ == "__main__":

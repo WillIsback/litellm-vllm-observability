@@ -216,7 +216,8 @@ BIND="$(grep '^BIND_ADDR=' .env | cut -d= -f2)"; BIND="${BIND:-127.0.0.1}"
 if command -v curl >/dev/null; then
   say "${D}Attente du premier scrape des cibles…${Z}"
   for _ in $(seq 1 20); do
-    TG="$(curl -s -m 3 "http://$BIND:$PROM_PORT/api/v1/targets?state=active" 2>/dev/null || true)"
+    # Prometheus n'a pas de TLS ; BIND vaut 127.0.0.1 par défaut (ou l'IP d'admin choisie)
+    TG="$(curl -s -m 3 "http://$BIND:$PROM_PORT/api/v1/targets?state=active" 2>/dev/null || true)"  # NOSONAR
     case "$TG" in *'"health":"unknown"'*|"") sleep 2;; *) break;; esac
   done
   # cibles en erreur : afficher la raison renvoyée par Prometheus
@@ -241,7 +242,7 @@ docker compose run --rm reporter check || warn "check en erreur : voir la sortie
 
 PORT="$(grep '^GF_PORT=' .env | cut -d= -f2)"
 step "Terminé"
-say "Grafana : ${B}http://$BIND:${PORT:-3000}${Z}  (utilisateur ${B}admin${Z}, dossier « LLM Observability »)"
+say "Grafana : ${B}http://$BIND:${PORT:-3000}${Z}  (utilisateur ${B}admin${Z}, dossier « LLM Observability »)"  # NOSONAR (affichage ; Grafana sans TLS, local par défaut)
 [ "$BIND" = 127.0.0.1 ] && say "${D}Grafana et Prometheus n'écoutent qu'en local : tunnel SSH (ssh -L 3000:127.0.0.1:3000 …) ou BIND_ADDR=<IP d'admin> dans .env${Z}"
 [ -n "${GEN:-}" ] && [ "${GF_ADMIN_PASSWORD:-}" = "$GEN" ] && say "Mot de passe généré : ${B}$GF_ADMIN_PASSWORD${Z}  ${D}(stocké dans $DIR/.env)${Z}"
 say "Rapport : ${D}cd $DIR && docker compose run --rm reporter --previous-month${Z}"
