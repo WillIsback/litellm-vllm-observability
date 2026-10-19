@@ -2,7 +2,7 @@
 # Installation en une commande :
 #   curl -fsSL https://raw.githubusercontent.com/WillIsback/litellm-vllm-observability/main/install.sh | bash
 # Mode non interactif (variables) : INSTALL_DIR, LITELLM_TARGET, VLLM_TARGETS ("nom=hôte:port,..."),
-# LITELLM_PG_HOST, LITELLM_PG_DB, LITELLM_PG_USER, LITELLM_PG_PASSWORD, LITELLM_METRICS_KEY, GF_ADMIN_PASSWORD, NO_START=1
+# LITELLM_PG_HOST, LITELLM_PG_DB, LITELLM_PG_USER, LITELLM_PG_PASSWORD, LITELLM_METRICS_KEY, VLLM_METRICS_KEY, GF_ADMIN_PASSWORD, NO_START=1
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/WillIsback/litellm-vllm-observability.git}"
@@ -42,15 +42,21 @@ setenv() { # setenv CLÉ VALEUR (sans interprétation des caractères spéciaux)
   local t; t=$(mktemp)
   V="$2" awk -v k="$1" 'BEGIN{v=ENVIRON["V"]} index($0,k"=")==1{print k"="v; next} {print}' .env >"$t" && cat "$t" >.env && rm -f "$t"
 }
+http_code() { # http_code hôte:port chemin [clé API] -> code HTTP (000 si injoignable)
+  local auth=(); [ -n "${3:-}" ] && auth=(-H "Authorization: Bearer $3")
+  curl -s -m 3 -o /dev/null -w '%{http_code}' "${auth[@]}" "http://$1$2" 2>/dev/null || true
+}
 probe() { # probe hôte:port chemin [clé API]
   command -v curl >/dev/null || return 0
-  local code auth=(); [ -n "${3:-}" ] && auth=(-H "Authorization: Bearer $3")
-  code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "${auth[@]}" "http://$1$2" 2>/dev/null || true)
+  local code; code=$(http_code "$@")
   case "$code" in
     2*) ok "$1 répond sur $2" ;;
     401|403) warn "$1 refuse l'accès ($code) : une clé API est requise pour $2" ;;
     *) warn "$1 ne répond pas depuis cet hôte (normal si l'adresse n'est valable que depuis un conteneur)" ;;
   esac
+}
+enable_auth() { # enable_auth job fichier-clé : décommente le bloc authorization du job dans prometheus.yml
+  sed -i -E "/job_name: $1\$/,/^  - job_name/ s/^(    )# (authorization:|  type: Bearer|  credentials_file: .*$2)\$/\1\2/" prometheus/prometheus.yml
 }
 
 say "${B}LiteLLM + vLLM observability${Z} — installation"
@@ -106,14 +112,14 @@ ask_secret LITELLM_METRICS_KEY "Clé API LiteLLM pour /metrics (optionnel)" "" \
   Où la trouver : UI LiteLLM → Virtual Keys → Create key (une clé dédiée suffit), ou la master key (LITELLM_MASTER_KEY).
   Elle est stockée dans prometheus/secrets/litellm_metrics_key (hors git)."
 if [ -n "$LITELLM_METRICS_KEY" ]; then
-  mkdir -p prometheus/secrets
   printf '%s' "$LITELLM_METRICS_KEY" > prometheus/secrets/litellm_metrics_key
   chmod 644 prometheus/secrets/litellm_metrics_key   # lu par le conteneur Prometheus (utilisateur nobody)
-  sed -i -E 's/^    # (authorization:|  type: Bearer|  credentials_file: \/etc\/prometheus\/secrets\/litellm_metrics_key)$/    \1/' prometheus/prometheus.yml
+  enable_auth litellm litellm_metrics_key
   ok "clé enregistrée, authentification Bearer activée dans prometheus.yml"
   probe "$LITELLM_TARGET" /metrics/ "$LITELLM_METRICS_KEY"
 fi
 
+mkdir -p prometheus/secrets
 step "Cibles vLLM (une par stack)"
 ask VLLM_TARGETS "Masters vLLM (nom=hôte:port, séparés par des virgules)" "stack-a=10.0.0.21:8000,stack-b=10.0.0.31:8000" \
 "Un « nom=hôte:port » par stack : le master qui expose l'API (port 8000 par défaut). Le nom sert dans Grafana.
@@ -126,7 +132,22 @@ for t in "${T[@]}"; do
   case "$t" in *=*) ;; *) die "format attendu nom=hôte:port, reçu : $t";; esac
   printf -- '- targets: ["%s"]\n  labels:\n    provider: %s\n    api_base: http://%s/v1\n' "${t#*=}" "${t%%=*}" "${t#*=}" >> prometheus/targets/vllm.yml
   probe "${t#*=}" /metrics
+  case "$(http_code "${t#*=}" /metrics)" in 401|403) VLLM_AUTH=1;; esac
 done
+if [ "${VLLM_AUTH:-0}" = 1 ] || [ -n "${VLLM_METRICS_KEY:-}" ]; then
+  ask_secret VLLM_METRICS_KEY "Clé API vLLM pour /metrics" "" \
+"/metrics est protégé sur au moins un master. Utiliser la valeur de --api-key (ou VLLM_API_KEY) du serveur vLLM.
+  Une seule clé est supportée : si les stacks ont des clés différentes, uniformiser ou ne scraper que celles-ci."
+  if [ -n "$VLLM_METRICS_KEY" ]; then
+    printf '%s' "$VLLM_METRICS_KEY" > prometheus/secrets/vllm_metrics_key
+    chmod 644 prometheus/secrets/vllm_metrics_key
+    enable_auth vllm vllm_metrics_key
+    ok "clé vLLM enregistrée, authentification Bearer activée"
+    for t in "${T[@]}"; do t="${t// /}"; [ -n "$t" ] && probe "${t#*=}" /metrics "$VLLM_METRICS_KEY"; done
+  fi
+else
+  ok "/metrics vLLM accessible sans clé : aucune clé nécessaire pour la collecte"
+fi
 ok "cibles Prometheus écrites (api_base doit être identique à celui du config.yaml LiteLLM)"
 
 [ "${NO_START:-0}" = 1 ] && { say; say "Démarrer : ${B}cd $DIR && docker compose up -d${Z}"; exit 0; }
