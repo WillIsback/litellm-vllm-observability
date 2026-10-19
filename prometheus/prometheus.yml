@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    env: iag-dev
+
+scrape_configs:
+  # Gateway LiteLLM : vue "client" (par team / user / clé / déploiement)
+  - job_name: litellm
+    metrics_path: /metrics/
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/litellm.yml]
+    # Si /metrics est protégé (require_auth_for_metrics_endpoint: true),
+    # décommenter et placer une clé dans prometheus/secrets/litellm_metrics_key
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/secrets/litellm_metrics_key
+
+  # Moteurs vLLM : vue "moteur" (file d'attente, KV cache, préemptions...)
+  # Ne scraper que le MASTER de chaque stack : c'est lui qui porte l'API server
+  # et expose /metrics ; les workers (--headless / Ray) n'en exposent pas.
+  - job_name: vllm
+    metrics_path: /metrics
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/vllm.yml]
+
+  # Optionnel : métriques système des 4 nœuds GB10 (node_exporter sur :9100)
+  # - job_name: node
+  #   file_sd_configs:
+  #     - files: [/etc/prometheus/targets/nodes.yml]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

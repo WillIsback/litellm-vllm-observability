@@ -1,0 +1,253 @@
+{
+  "uid": "llm-spendlogs",
+  "title": "LiteLLM — SpendLogs (données exactes par requête)",
+  "description": "Source : table LiteLLM_SpendLogs (Postgres LiteLLM), rôle lecture seule.",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": [
+    "llm",
+    "iag"
+  ],
+  "timezone": "Europe/Paris",
+  "refresh": "1m",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 37,
+      "type": "table",
+      "title": "Usage par team (période)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "SELECT COALESCE(t.team_alias, s.team_id, '(sans team)') AS \"Team\",\n  count(*) AS \"Requêtes\", count(DISTINCT s.\"user\") AS \"Utilisateurs\",\n  sum(s.prompt_tokens) AS \"Tokens in\", sum(s.completion_tokens) AS \"Tokens out\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\"))) FILTER (WHERE s.\"completionStartTime\" > s.\"startTime\") AS \"TTFT p95 (s)\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"endTime\" - s.\"startTime\"))) AS \"Durée p95 (s)\"\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_TeamTable\" t ON t.team_id = s.team_id\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\")\nGROUP BY 1 ORDER BY 2 DESC",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 38,
+      "type": "table",
+      "title": "Usage par utilisateur et clé (période)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "SELECT COALESCE(t.team_alias, s.team_id, '(sans team)') AS \"Team\", COALESCE(u.user_email, NULLIF(s.\"user\", ''), '(inconnu)') AS \"Utilisateur\",\n  COALESCE(k.key_alias, '(sans alias)') AS \"Clé\",\n  count(*) AS \"Requêtes\", sum(s.prompt_tokens) AS \"Tokens in\", sum(s.completion_tokens) AS \"Tokens out\",\n  round(avg(s.prompt_tokens)) AS \"Prompt moyen\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\"))) FILTER (WHERE s.\"completionStartTime\" > s.\"startTime\") AS \"TTFT p95 (s)\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"endTime\" - s.\"startTime\"))) AS \"Durée p95 (s)\"\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_TeamTable\" t ON t.team_id = s.team_id\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\")\nGROUP BY 1,2,3 ORDER BY 4 DESC",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "Requêtes par heure et par team",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "SELECT $__timeGroupAlias(s.\"startTime\", '1h', 0), COALESCE(t.team_alias, s.team_id, '(sans team)') AS metric, count(*) AS value\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_TeamTable\" t ON t.team_id = s.team_id\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\")\nGROUP BY 1,2 ORDER BY 1",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "TTFT p95 par jour et par stack (api_base)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "SELECT $__timeGroupAlias(s.\"startTime\", '1d', 0), s.api_base AS metric,\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\"))) AS value\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_TeamTable\" t ON t.team_id = s.team_id\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\") AND s.\"completionStartTime\" > s.\"startTime\"\nGROUP BY 1,2 ORDER BY 1",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Concurrence estimée (requêtes simultanées, pic par 5 min)",
+      "description": "Reconstituée à partir de startTime/endTime de chaque requête : vraie concurrence vue par la gateway.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "WITH ev AS (\n  SELECT \"startTime\" AS ts, 1 AS d FROM \"LiteLLM_SpendLogs\" WHERE $__timeFilter(\"startTime\")\n  UNION ALL\n  SELECT \"endTime\", -1 FROM \"LiteLLM_SpendLogs\" WHERE $__timeFilter(\"startTime\")\n), c AS (SELECT ts, sum(d) OVER (ORDER BY ts, d) AS conc FROM ev)\nSELECT $__timeGroupAlias(ts, '5m', 0), max(conc) AS \"concurrence max\"\nFROM c GROUP BY 1 ORDER BY 1",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ],
+  "annotations": {
+    "list": []
+  }
+}

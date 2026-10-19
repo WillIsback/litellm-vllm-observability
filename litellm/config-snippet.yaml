@@ -1,0 +1,25 @@
+# À fusionner dans le config.yaml de LiteLLM.
+litellm_settings:
+  callbacks: ["prometheus"]          # expose /metrics/
+
+model_list:
+  # Les deux stacks derrière le même model_name => LiteLLM fait le load balancing.
+  # L'api_base doit correspondre au label `api_base` de prometheus/targets/vllm.yml
+  - model_name: mistral-small
+    litellm_params:
+      model: hosted_vllm/mistral-small-4
+      api_base: http://10.0.0.21:8000/v1
+  - model_name: mistral-small
+    litellm_params:
+      model: hosted_vllm/mistral-small-4
+      api_base: http://10.0.0.31:8000/v1
+
+router_settings:
+  # Pour garder le prefix cache d'un dev sur la même stack, comparer en charge
+  # les stratégies de routage (simple-shuffle, least-busy, ...).
+  routing_strategy: simple-shuffle
+
+general_settings:
+  # Ne PAS activer disable_spend_logs : le rapport et le dashboard SpendLogs en dépendent.
+  # Garder le contenu des prompts hors de SpendLogs.
+  store_prompts_in_spend_logs: false

@@ -1,0 +1,5 @@
+# Adresse du proxy LiteLLM (hôte:port), vue depuis le conteneur Prometheus.
+# Si LiteLLM tourne sur la même machine : host.docker.internal:4000
+- targets: ["10.0.0.10:4000"]
+  labels:
+    service: litellm-gateway

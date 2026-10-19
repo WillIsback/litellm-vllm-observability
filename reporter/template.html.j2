@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rapport infra LLM — {{ period }}</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--fg:#1d2433;--muted:#5d6678;--line:#e3e6eb;--accent:#2f5bd3;
+--ok:#1f8a4c;--warn:#b5560c;--info:#2f5bd3;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2128;--fg:#e6e9ee;--muted:#9aa3b2;--line:#2c323b;
+--accent:#7aa2ff;--ok:#4cc38a;--warn:#f0a35a;--info:#7aa2ff;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1200px;margin:0 auto;padding:24px}
+header h1{margin:0;font-size:22px}header p{margin:4px 0 0;color:var(--muted)}
+h2{font-size:17px;margin:32px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+h3{font-size:14px;margin:18px 0 8px;color:var(--muted);font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:20px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.kpi .l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.kpi .v{font-size:20px;font-weight:700;margin-top:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;overflow-x:auto}
+.card img{max-width:100%;display:block;background:#fff;border-radius:4px}
+.tbl{border-collapse:collapse;width:100%;font-size:13px}
+.tbl th{text-align:left;color:var(--muted);font-weight:600;border-bottom:2px solid var(--line);padding:6px 8px;white-space:nowrap}
+.tbl td{border-bottom:1px solid var(--line);padding:6px 8px;white-space:nowrap}
+.note{border-left:4px solid var(--info);padding:8px 12px;margin:6px 0;background:var(--card);border-radius:4px}
+.note.warn{border-color:var(--warn)}.note.ok{border-color:var(--ok)}
+.note b{display:inline-block;min-width:90px}
+.muted{color:var(--muted)}footer{margin-top:32px;color:var(--muted);font-size:12px}
+@media print{body{background:#fff}.card,.kpi{break-inside:avoid}}
+</style>
+</head>
+<body><main>
+<header>
+  <h1>Rapport d’usage — infrastructure LLM équipe dev</h1>
+  <p>Période : <b>{{ period }}</b> · généré le {{ generated }}{% if anonymized %} · utilisateurs anonymisés{% endif %}</p>
+</header>
+
+<section class="kpis">
+{% for l, v in kpis %}<div class="kpi"><div class="l">{{ l }}</div><div class="v">{{ v }}</div></div>{% endfor %}
+</section>
+
+<h2>Diagnostic</h2>
+<p class="muted">Règles automatiques (SLO : TTFT p95 ≤ {{ slo_ttft }} s, ITL p95 ≤ {{ (slo_itl*1000)|round|int }} ms). À confirmer par la lecture des courbes.</p>
+{% for n in notes %}<div class="note {{ n.lvl }}"><b>{{ n.stack }}</b> {{ n.txt }}</div>{% else %}<p class="muted">Pas assez de données pour un diagnostic.</p>{% endfor %}
+
+<h2>1. Usage vu par la gateway LiteLLM</h2>
+<div class="card">{% if gw.chart_daily %}<img alt="Requêtes par jour" src="data:image/png;base64,{{ gw.chart_daily }}">{% else %}<p class="muted">Pas de données.</p>{% endif %}</div>
+<div class="card">{% if gw.chart_heatmap %}<img alt="Profil jour × heure" src="data:image/png;base64,{{ gw.chart_heatmap }}">{% endif %}</div>
+<h3>Par team</h3><div class="card">{{ gw.team|safe }}</div>
+<h3>Par utilisateur et clé API</h3><div class="card">{{ gw.user|safe }}</div>
+
+<h2>2. Moteurs vLLM (par stack)</h2>
+<div class="card">{{ eng.table|safe }}</div>
+<div class="card">{% if eng.chart_conc %}<img alt="Concurrence" src="data:image/png;base64,{{ eng.chart_conc }}">{% endif %}</div>
+<div class="card">{% if eng.chart_kv %}<img alt="KV cache" src="data:image/png;base64,{{ eng.chart_kv }}">{% endif %}</div>
+
+<h2>3. Données exactes par requête (LiteLLM SpendLogs)</h2>
+{% if sl is none %}<p class="muted">Non configuré (LITELLM_PG_HOST absent).</p>
+{% elif sl.error %}<div class="note warn"><b>SpendLogs</b> {{ sl.error }}</div>
+{% else %}
+<p class="muted">{{ sl.n }} requêtes analysées. TTFT et temps/token calculés sur les requêtes streamées.</p>
+<div class="card">{% if sl.chart_conc %}<img alt="Concurrence exacte" src="data:image/png;base64,{{ sl.chart_conc }}">{% endif %}</div>
+<h3>Par team</h3><div class="card">{{ sl.team|safe }}</div>
+<h3>Par utilisateur et clé API</h3><div class="card">{{ sl.user|safe }}</div>
+<h3>Répartition entre stacks</h3><div class="card">{{ sl.base|safe }}</div>
+{% endif %}
+
+<footer>Sources : Prometheus (LiteLLM /metrics, vLLM /metrics) · Postgres LiteLLM (LiteLLM_SpendLogs). Les CSV correspondants sont à côté de ce fichier.</footer>
+</main></body></html>

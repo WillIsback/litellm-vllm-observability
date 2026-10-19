@@ -1,0 +1,1019 @@
+{
+  "uid": "llm-litellm-usage",
+  "title": "LiteLLM — Usage équipe dev",
+  "description": "Vue gateway : charge et latence par team / utilisateur / clé, santé des déploiements.",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": [
+    "llm",
+    "iag"
+  ],
+  "timezone": "Europe/Paris",
+  "refresh": "1m",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "team",
+        "label": "Team",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prom-llm"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"litellm_proxy_total_requests_metric(_total)?\"}, team_alias)",
+          "refId": "v"
+        },
+        "definition": "label_values({__name__=~\"litellm_proxy_total_requests_metric(_total)?\"}, team_alias)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "user",
+        "label": "Utilisateur",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prom-llm"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\"}, user)",
+          "refId": "v"
+        },
+        "definition": "label_values({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\"}, user)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "key",
+        "label": "Clé API",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prom-llm"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\"}, api_key_alias)",
+          "refId": "v"
+        },
+        "definition": "label_values({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\"}, api_key_alias)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Vue d'ensemble (période sélectionnée)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Requêtes",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum(increase({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Tokens entrée",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum(increase({__name__=~\"litellm_input_tokens_metric(_total)?|litellm_input_tokens(_total)?|litellm_prompt_tokens_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Tokens sortie",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum(increase({__name__=~\"litellm_output_tokens_metric(_total)?|litellm_output_tokens(_total)?|litellm_completion_tokens_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Taux d'échec",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum(increase({__name__=~\"litellm_proxy_failed_requests_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range])) / clamp_min(sum(increase({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range])), 1)",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Utilisateurs actifs",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "count(sum by (user) (increase({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range])) > 0)",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "TTFT p95",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate({__name__=~\"litellm_llm_api_time_to_first_token_metric_bucket\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range])))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Charge par team",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Requêtes / min par team",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (team_alias) (rate({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{team_alias}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Tokens / s par team (entrée + sortie)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (team_alias) (rate({__name__=~\"litellm_input_tokens_metric(_total)?|litellm_input_tokens(_total)?|litellm_prompt_tokens_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__rate_interval]))",
+          "legendFormat": "{{team_alias}} · in",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (team_alias) (rate({__name__=~\"litellm_output_tokens_metric(_total)?|litellm_output_tokens(_total)?|litellm_completion_tokens_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__rate_interval]))",
+          "legendFormat": "{{team_alias}} · out",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "TTFT p50 / p95 par team (vu par la gateway, requêtes streamées)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, team_alias) (rate({__name__=~\"litellm_llm_api_time_to_first_token_metric_bucket\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__rate_interval])))",
+          "legendFormat": "{{team_alias}} p50",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, team_alias) (rate({__name__=~\"litellm_llm_api_time_to_first_token_metric_bucket\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__rate_interval])))",
+          "legendFormat": "{{team_alias}} p95",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Latence totale p95 par team + overhead LiteLLM p95",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, team_alias) (rate({__name__=~\"litellm_request_total_latency_metric_bucket\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__rate_interval])))",
+          "legendFormat": "{{team_alias}} total p95",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate({__name__=~\"litellm_overhead_latency_metric_bucket\",api_key_alias=~\"$key\"}[$__rate_interval])))",
+          "legendFormat": "overhead LiteLLM p95",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Détail par utilisateur / clé (période sélectionnée)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "Usage par utilisateur et clé",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (team_alias, user, api_key_alias) (increase({__name__=~\"litellm_proxy_total_requests_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (team_alias, user, api_key_alias) (increase({__name__=~\"litellm_input_tokens_metric(_total)?|litellm_input_tokens(_total)?|litellm_prompt_tokens_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "B",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (team_alias, user, api_key_alias) (increase({__name__=~\"litellm_output_tokens_metric(_total)?|litellm_output_tokens(_total)?|litellm_completion_tokens_metric(_total)?\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "C",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, team_alias, user, api_key_alias) (rate({__name__=~\"litellm_llm_api_time_to_first_token_metric_bucket\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range])))",
+          "legendFormat": "",
+          "refId": "D",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, team_alias, user, api_key_alias) (rate({__name__=~\"litellm_request_total_latency_metric_bucket\",team_alias=~\"$team\",user=~\"$user\",api_key_alias=~\"$key\"}[$__range])))",
+          "legendFormat": "",
+          "refId": "E",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TTFT p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Latence p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Requêtes"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tokens in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tokens out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "team_alias": "Team",
+              "user": "Utilisateur",
+              "api_key_alias": "Clé",
+              "Value #A": "Requêtes",
+              "Value #B": "Tokens in",
+              "Value #C": "Tokens out",
+              "Value #D": "TTFT p95",
+              "Value #E": "Latence p95"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Déploiements (stacks vLLM vues par la gateway)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Latence par token de sortie p95 par déploiement",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, api_base) (rate({__name__=~\"litellm_deployment_latency_per_output_token_bucket\"}[$__rate_interval])))",
+          "legendFormat": "{{api_base}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Succès / échecs par déploiement (req/min)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 33,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (api_base) (rate({__name__=~\"litellm_deployment_success_responses(_total)?\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{api_base}} ok",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (api_base) (rate({__name__=~\"litellm_deployment_failure_responses(_total)?\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{api_base}} échec",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Mises en cooldown par déploiement",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 33,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (api_base) (increase({__name__=~\"litellm_deployment_cooled_down(_total)?\"}[$__rate_interval]))",
+          "legendFormat": "{{api_base}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ],
+  "annotations": {
+    "list": []
+  }
+}

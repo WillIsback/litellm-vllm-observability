@@ -1,0 +1,61 @@
+# Observabilité de l'infra LLM (LiteLLM + 2 stacks vLLM)
+# - prometheus : scrape LiteLLM /metrics + /metrics des 2 masters vLLM, rétention 45 j
+# - grafana    : 3 dashboards provisionnés (usage LiteLLM, moteurs vLLM, SpendLogs Postgres)
+# - reporter   : génère le rapport mensuel HTML + CSV (lancé à la demande)
+#
+#   docker compose up -d
+#   docker compose run --rm reporter                    # 30 derniers jours
+#   docker compose run --rm reporter --previous-month   # mois calendaire précédent
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: llmobs-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-45d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROM_PORT:-9090}:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: llmobs-grafana
+    restart: unless-stopped
+    depends_on: [prometheus]
+    env_file: .env
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?définir GF_ADMIN_PASSWORD dans .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: Europe/Paris
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GF_PORT:-3000}:3000"
+
+  reporter:
+    build: ./reporter
+    image: llmobs-reporter:1.0
+    profiles: ["report"]                          # pas démarré par `up`, uniquement via `run`
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"   # pour pouvoir écrire dans ./reports
+    env_file: .env
+    environment:
+      PROM_URL: http://prometheus:9090
+      TZ: Europe/Paris
+    volumes:
+      - ./reports:/reports
+    depends_on: [prometheus]
+
+volumes:
+  prometheus-data:
+  grafana-data:

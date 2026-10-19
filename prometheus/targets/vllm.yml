@@ -1,0 +1,12 @@
+# Un bloc par stack vLLM (adresse du MASTER uniquement).
+# `provider` : nom lisible utilisé dans Grafana et le rapport.
+# `api_base` : DOIT être identique à l'api_base déclaré dans le config.yaml LiteLLM
+#              -> permet de croiser vue gateway et vue moteur.
+- targets: ["10.0.0.21:8000"]
+  labels:
+    provider: stack-a
+    api_base: http://10.0.0.21:8000/v1
+- targets: ["10.0.0.31:8000"]
+  labels:
+    provider: stack-b
+    api_base: http://10.0.0.31:8000/v1

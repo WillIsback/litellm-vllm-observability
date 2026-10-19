@@ -1,0 +1,24 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prom-llm
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+
+  # Base Postgres de LiteLLM (table LiteLLM_SpendLogs) - rôle lecture seule
+  - name: LiteLLM-Postgres
+    uid: pg-litellm
+    type: grafana-postgresql-datasource
+    url: ${LITELLM_PG_HOST}
+    user: ${LITELLM_PG_USER}
+    jsonData:
+      database: ${LITELLM_PG_DB}
+      sslmode: ${LITELLM_PG_SSLMODE}
+      postgresVersion: 1500
+      timescaledb: false
+    secureJsonData:
+      password: ${LITELLM_PG_PASSWORD}

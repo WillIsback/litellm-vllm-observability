@@ -1,0 +1,4 @@
+- targets: ["10.0.0.21:9100", "10.0.0.22:9100"]
+  labels: {provider: stack-a}
+- targets: ["10.0.0.31:9100", "10.0.0.32:9100"]
+  labels: {provider: stack-b}
