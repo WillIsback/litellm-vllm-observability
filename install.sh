@@ -2,7 +2,7 @@
 # Installation en une commande :
 #   curl -fsSL https://raw.githubusercontent.com/WillIsback/litellm-vllm-observability/main/install.sh | bash
 # Mode non interactif (variables) : INSTALL_DIR, LITELLM_TARGET, VLLM_TARGETS ("nom=hôte:port,..."),
-# LITELLM_PG_HOST, LITELLM_PG_DB, LITELLM_PG_USER, LITELLM_PG_PASSWORD, GF_ADMIN_PASSWORD, NO_START=1
+# LITELLM_PG_HOST, LITELLM_PG_DB, LITELLM_PG_USER, LITELLM_PG_PASSWORD, LITELLM_METRICS_KEY, GF_ADMIN_PASSWORD, NO_START=1
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/WillIsback/litellm-vllm-observability.git}"
@@ -42,10 +42,15 @@ setenv() { # setenv CLÉ VALEUR (sans interprétation des caractères spéciaux)
   local t; t=$(mktemp)
   V="$2" awk -v k="$1" 'BEGIN{v=ENVIRON["V"]} index($0,k"=")==1{print k"="v; next} {print}' .env >"$t" && cat "$t" >.env && rm -f "$t"
 }
-probe() { # probe hôte:port chemin
+probe() { # probe hôte:port chemin [clé API]
   command -v curl >/dev/null || return 0
-  if curl -fsS -m 3 -o /dev/null "http://$1$2" 2>/dev/null; then ok "$1 répond sur ${2}"
-  else warn "$1 ne répond pas depuis cet hôte (normal si l'adresse n'est valable que depuis un conteneur)"; fi
+  local code auth=(); [ -n "${3:-}" ] && auth=(-H "Authorization: Bearer $3")
+  code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "${auth[@]}" "http://$1$2" 2>/dev/null || true)
+  case "$code" in
+    2*) ok "$1 répond sur $2" ;;
+    401|403) warn "$1 refuse l'accès ($code) : une clé API est requise pour $2" ;;
+    *) warn "$1 ne répond pas depuis cet hôte (normal si l'adresse n'est valable que depuis un conteneur)" ;;
+  esac
 }
 
 say "${B}LiteLLM + vLLM observability${Z} — installation"
@@ -56,7 +61,7 @@ docker compose version >/dev/null 2>&1 || die "docker compose (v2) est requis"
 ok "git, docker, docker compose"
 
 step "Récupération du dépôt"
-if [ -d "$DIR/.git" ]; then git -C "$DIR" pull -q --ff-only && ok "mis à jour : $DIR"
+if [ -d "$DIR/.git" ]; then git -C "$DIR" pull -q --ff-only --autostash && ok "mis à jour : $DIR"
 else git clone -q --depth 1 "$REPO_URL" "$DIR" && ok "cloné dans $DIR"; fi
 cd "$DIR"
 
@@ -95,6 +100,19 @@ ask LITELLM_TARGET "Adresse du proxy LiteLLM (hôte:port)" "10.0.0.10:4000" \
   Prérequis : callbacks: [\"prometheus\"] dans litellm_settings. Test : curl http://HÔTE:4000/metrics/"
 printf -- '- targets: ["%s"]\n  labels:\n    service: litellm-gateway\n' "$LITELLM_TARGET" > prometheus/targets/litellm.yml
 probe "$LITELLM_TARGET" /metrics/
+
+ask_secret LITELLM_METRICS_KEY "Clé API LiteLLM pour /metrics (optionnel)" "" \
+"Nécessaire seulement si /metrics est protégé (require_auth_for_metrics_endpoint: true), sinon laisser vide.
+  Où la trouver : UI LiteLLM → Virtual Keys → Create key (une clé dédiée suffit), ou la master key (LITELLM_MASTER_KEY).
+  Elle est stockée dans prometheus/secrets/litellm_metrics_key (hors git)."
+if [ -n "$LITELLM_METRICS_KEY" ]; then
+  mkdir -p prometheus/secrets
+  printf '%s' "$LITELLM_METRICS_KEY" > prometheus/secrets/litellm_metrics_key
+  chmod 644 prometheus/secrets/litellm_metrics_key   # lu par le conteneur Prometheus (utilisateur nobody)
+  sed -i -E 's/^    # (authorization:|  type: Bearer|  credentials_file: \/etc\/prometheus\/secrets\/litellm_metrics_key)$/    \1/' prometheus/prometheus.yml
+  ok "clé enregistrée, authentification Bearer activée dans prometheus.yml"
+  probe "$LITELLM_TARGET" /metrics/ "$LITELLM_METRICS_KEY"
+fi
 
 step "Cibles vLLM (une par stack)"
 ask VLLM_TARGETS "Masters vLLM (nom=hôte:port, séparés par des virgules)" "stack-a=10.0.0.21:8000,stack-b=10.0.0.31:8000" \
