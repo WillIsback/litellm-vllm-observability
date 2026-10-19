@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY report.py template.html.j2 ./
+COPY report.py analyse.py template.html.j2 ./
 
 RUN useradd -u 10001 -m reporter && mkdir -p /reports && chown reporter /reports
 USER reporter

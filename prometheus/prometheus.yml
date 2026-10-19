@@ -29,6 +29,11 @@ scrape_configs:
     #   type: Bearer
     #   credentials_file: /etc/prometheus/secrets/vllm_metrics_key
 
+  # Sonde témoin : petite requête fixe par cible (service canary du compose)
+  - job_name: canary
+    static_configs:
+      - targets: [canary:9105]
+
   # Optionnel : métriques système des 4 nœuds GB10 (node_exporter sur :9100)
   # - job_name: node
   #   file_sd_configs:

@@ -5,29 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rapport infra LLM — {{ period }}</title>
 <style>
-:root{--bg:#f5f6f8;--card:#fff;--fg:#1d2433;--muted:#5d6678;--line:#e3e6eb;--accent:#2f5bd3;
---ok:#1f8a4c;--warn:#b5560c;--info:#2f5bd3;color-scheme:light}
-@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2128;--fg:#e6e9ee;--muted:#9aa3b2;--line:#2c323b;
---accent:#7aa2ff;--ok:#4cc38a;--warn:#f0a35a;--info:#7aa2ff;color-scheme:dark}}
+:root{--bg:#fff;--card:#fff;--alt:#f6f6f6;--fg:#161616;--muted:#666;--line:#ddd;--accent:#000091;
+--ok:#18753c;--warn:#b34000;--info:#0063cb;--ok-bg:#b8fec9;--warn-bg:#ffe9e6;--info-bg:#e8edff;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--card:#1e1e1e;--alt:#242424;--fg:#cecece;--muted:#929292;--line:#353535;
+--accent:#8585f6;--ok:#27a658;--warn:#fc5d00;--info:#518fff;--ok-bg:#19341f;--warn-bg:#3b1e14;--info-bg:#1a2340;color-scheme:dark}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
-font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{max-width:1200px;margin:0 auto;padding:24px}
-header h1{margin:0;font-size:22px}header p{margin:4px 0 0;color:var(--muted)}
-h2{font-size:17px;margin:32px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--line)}
-h3{font-size:14px;margin:18px 0 8px;color:var(--muted);font-weight:600}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:20px}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
-.kpi .l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
-.kpi .v{font-size:20px;font-weight:700;margin-top:2px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;overflow-x:auto}
-.card img{max-width:100%;display:block;background:#fff;border-radius:4px}
-.tbl{border-collapse:collapse;width:100%;font-size:13px}
-.tbl th{text-align:left;color:var(--muted);font-weight:600;border-bottom:2px solid var(--line);padding:6px 8px;white-space:nowrap}
-.tbl td{border-bottom:1px solid var(--line);padding:6px 8px;white-space:nowrap}
-.note{border-left:4px solid var(--info);padding:8px 12px;margin:6px 0;background:var(--card);border-radius:4px}
-.note.warn{border-color:var(--warn)}.note.ok{border-color:var(--ok)}
-.note b{display:inline-block;min-width:90px}
-.muted{color:var(--muted)}footer{margin-top:32px;color:var(--muted);font-size:12px}
+font:15px/1.55 Marianne,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+main{max-width:1200px;margin:0 auto;padding:0 16px 32px}
+header{border-bottom:1px solid var(--line);padding:24px 0 16px;margin-bottom:8px}
+header h1{margin:0;font-size:26px;line-height:1.25}header p{margin:6px 0 0;color:var(--muted)}
+h2{font-size:21px;margin:40px 0 12px}
+h3{font-size:16px;margin:22px 0 8px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:20px}
+.kpi{background:var(--card);border:1px solid var(--line);border-bottom:3px solid var(--accent);padding:12px 14px}
+.kpi .l{font-size:13px;color:var(--muted)}
+.kpi .v{font-size:22px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+.card{background:var(--card);border:1px solid var(--line);padding:14px;margin-bottom:12px;overflow-x:auto}
+.card img{max-width:100%;display:block;background:#fff}
+.tbl{border-collapse:collapse;width:100%;font-size:14px}
+.tbl th{text-align:left;font-weight:700;background:var(--alt);border-bottom:2px solid var(--fg);padding:8px 10px;white-space:nowrap}
+.tbl td{border-bottom:1px solid var(--line);padding:8px 10px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.note{border-left:4px solid var(--info);padding:12px 16px;margin:8px 0;background:var(--info-bg)}
+.note.warn{border-color:var(--warn);background:var(--warn-bg)}.note.ok{border-color:var(--ok);background:var(--ok-bg)}
+.note b{display:inline-block;min-width:96px}
+.muted{color:var(--muted)}footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 @media print{body{background:#fff}.card,.kpi{break-inside:avoid}}
 </style>
 </head>
@@ -44,6 +45,31 @@ h3{font-size:14px;margin:18px 0 8px;color:var(--muted);font-weight:600}
 <h2>Diagnostic</h2>
 <p class="muted">Règles automatiques (SLO : TTFT p95 ≤ {{ slo_ttft }} s, ITL p95 ≤ {{ (slo_itl*1000)|round|int }} ms). À confirmer par la lecture des courbes.</p>
 {% for n in notes %}<div class="note {{ n.lvl }}"><b>{{ n.stack }}</b> {{ n.txt }}</div>{% else %}<p class="muted">Pas assez de données pour un diagnostic.</p>{% endfor %}
+
+<h2>Hypothèse : les très gros prompts ralentissent-ils les autres ?</h2>
+<p class="muted">Petite requête : prompt &lt; {{ (small/1000)|int }}k tokens. Gros prompt : ≥ {{ (large/1000)|int }}k tokens. Seuils réglables (SMALL_PROMPT_TOKENS, LARGE_PROMPT_TOKENS).</p>
+{% if sl and not sl.error %}
+<div class="note {{ sl.verdict.lvl }}"><b>Verdict</b> {{ sl.verdict.txt }}</div>
+<h3>TTFT des petites requêtes, avec ou sans gros prompt d'un autre utilisateur en lecture sur la même stack</h3>
+<div class="card">{{ sl.contention|safe }}</div>
+<h3>TTFT par taille de prompt</h3>
+<p class="muted">Un gros prompt a naturellement un TTFT élevé : c'est la ligne des petites requêtes qui mesure la gêne subie.</p>
+<div class="card">{{ sl.by_size|safe }}</div>
+{% else %}<p class="muted">Nécessite SpendLogs (Postgres LiteLLM).</p>{% endif %}
+<h3>Sonde témoin : une petite requête fixe envoyée à intervalle régulier</h3>
+{% if eng.canary %}
+<p class="muted">Indépendante du mélange de trafic : c'est l'expérience d'un utilisateur ordinaire. « % temps dégradé » : part des tranches de 10 min où plus de 5 % des sondes ont attendu plus de 10 s.</p>
+<div class="card">{{ eng.canary|safe }}</div>
+<div class="card">{% if eng.chart_canary %}<img alt="Sonde témoin" src="data:image/png;base64,{{ eng.chart_canary }}">{% endif %}</div>
+{% else %}<p class="muted">Sonde non configurée (CANARY_TARGETS vide).</p>{% endif %}
+{% if sl and not sl.error %}
+<h3>Requêtes simultanées par clé (dimensionnement de max_parallel_requests)</h3>
+<p class="muted">« Minutes &gt; N » : minutes d'activité où la clé aurait été bridée par une limite à N requêtes simultanées.</p>
+<div class="card">{{ sl.key_conc|safe }}</div>
+<h3>Les 20 plus gros prompts de la période</h3>
+<p class="muted">Pour relier un ralentissement signalé à un événement précis.</p>
+<div class="card">{{ sl.top|safe }}</div>
+{% endif %}
 
 <h2>1. Usage vu par la gateway LiteLLM</h2>
 <div class="card">{% if gw.chart_daily %}<img alt="Requêtes par jour" src="data:image/png;base64,{{ gw.chart_daily }}">{% else %}<p class="muted">Pas de données.</p>{% endif %}</div>

@@ -34,12 +34,17 @@ import pandas as pd  # noqa: E402
 import requests  # noqa: E402
 from jinja2 import Environment, FileSystemLoader, select_autoescape  # noqa: E402
 
+import analyse as hyp  # noqa: E402
+
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Paris"))
 PROM_URL = os.environ.get("PROM_URL", "http://localhost:9090").rstrip("/")
 OUT_DIR = Path(os.environ.get("REPORT_DIR", "/reports"))
 SLO_TTFT = float(os.environ.get("SLO_TTFT_P95", "2.0"))
 SLO_ITL = float(os.environ.get("SLO_ITL_P95", "0.10"))
-ANONYMIZE = os.environ.get("ANONYMIZE_USERS", "false").lower() in ("1", "true", "yes")
+ANONYMIZE = os.environ.get("ANONYMIZE_USERS", "true").lower() in ("1", "true", "yes")
+# Seuils de l'analyse « gros prompts vs petites requêtes » (tokens d'entrée)
+SMALL_PROMPT = int(os.environ.get("SMALL_PROMPT_TOKENS", "8000"))
+LARGE_PROMPT = int(os.environ.get("LARGE_PROMPT_TOKENS", "100000"))
 
 # --- noms de métriques (regex tolérantes aux changements de version) ---------
 M = {
@@ -65,7 +70,11 @@ M = {
     "queue": "vllm:request_queue_time_seconds_bucket",
     "phit": "vllm:(gpu_)?prefix_cache_hits(_total)?",
     "pq": "vllm:(gpu_)?prefix_cache_queries(_total)?",
+    # Sonde témoin (service canary)
+    "canary_ttft": "canary_ttft_seconds_bucket",
+    "canary_req": "canary_requests_total",
 }
+OPTIONAL = {"canary_ttft", "canary_req"}  # absentes si la sonde n'est pas configurée
 
 
 def sel(key: str, extra: str = "") -> str:
@@ -325,8 +334,32 @@ def engine_section(p: Prom, per: Period) -> dict:
     wait = p.range_df(f"max_over_time(sum by (provider) ({sel('waiting')})[1h:1m])", start, per.end, 3600, "provider")
     kv = p.range_df(f"max_over_time(max by (provider) ({sel('kv')})[1h:1m])", start, per.end, 3600, "provider")
     conc = pd.concat([run.add_suffix(" · en cours"), wait.add_suffix(" · en attente")], axis=1) if not run.empty else wait
+    canary = pd.DataFrame()
+    cl = ["target"]
+    c_req, c_err, c_tt = sel("canary_req"), sel("canary_req", 'status!="ok"'), sel("canary_ttft")
+    c_le10, c_inf = sel("canary_ttft", 'le="10"'), sel("canary_ttft", 'le="+Inf"')
+    cparts = [
+        p.vector_df(f"sum by (target) (increase({c_req}[{w}]))", at, cl, "Sondes"),
+        p.vector_df(f"sum by (target) (increase({c_err}[{w}]))", at, cl, "Échecs"),
+        p.vector_df(f"histogram_quantile(0.5, sum by (le, target) (increase({c_tt}[{w}])))", at, cl, "TTFT p50 (s)"),
+        p.vector_df(f"histogram_quantile(0.95, sum by (le, target) (increase({c_tt}[{w}])))", at, cl, "TTFT p95 (s)"),
+        # part des tranches de 10 min où plus de 5 % des sondes ont attendu plus de 10 s
+        p.vector_df(f"avg_over_time((sum by (target) (rate({c_le10}[10m])) / "
+                    f"clamp_min(sum by (target) (rate({c_inf}[10m])), 1e-9) < bool 0.95)[{w}:5m])",
+                    at, cl, "% temps dégradé"),
+    ]
+    if not cparts[0].empty:
+        canary = cparts[0]
+        for part in cparts[1:]:
+            canary = canary.merge(part, on=cl, how="outer")
+        canary = canary.rename(columns={"target": "Cible"})
+    ctt = p.range_df(f"histogram_quantile(0.95, sum by (le, target) (increase({sel('canary_ttft')}[1h])))",
+                     start, per.end, 3600, "target")
+
     return {
         "table": df,
+        "canary": canary,
+        "chart_canary": chart_lines(ctt, "Sonde témoin : TTFT p95 horaire d'une petite requête fixe", "secondes"),
         "chart_conc": chart_lines(conc, "Requêtes simultanées (max horaire)", "requêtes"),
         "chart_kv": chart_lines(kv, "Occupation KV cache (max horaire)", "KV cache", pct=True),
     }
@@ -356,7 +389,7 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
         status = 's.status' if "status" in cols else "NULL"
         q = f'''
         SELECT s."startTime" AS start, s."endTime" AS end_, s."completionStartTime" AS first_tok,
-               s.prompt_tokens, s.completion_tokens, s.api_base, s.model_group,
+               s.prompt_tokens, s.completion_tokens, s.api_base, s.model_group, s.api_key AS key_id,
                COALESCE(t.team_alias, {team_id}, '(sans team)') AS team,
                COALESCE(u.user_email, NULLIF(s."user", ''), '(inconnu)') AS user_,
                COALESCE(k.key_alias, '(sans alias)') AS key_alias,
@@ -379,6 +412,7 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
         df[c] = pd.to_datetime(df[c], utc=True).dt.tz_convert(TZ)
     df["user_"] = df["user_"].map(anon)
     df["key_alias"] = df["key_alias"].map(anon.keys)
+    df["api_base"] = df["api_base"].fillna("").str.rstrip("/")  # « …/v1/ » (non streamé) = « …/v1 » (streamé)
     df["dur"] = (df["end_"] - df["start"]).dt.total_seconds()
     ttft = (df["first_tok"] - df["start"]).dt.total_seconds()
     df["ttft"] = ttft.where((df["first_tok"] > df["start"]) & (df["first_tok"] < df["end_"]))
@@ -410,7 +444,8 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
     ev = ev.sort_values(["t", "d"]).reset_index(drop=True)
     ev["c"] = ev["d"].cumsum()
     conc_5m = ev.set_index("t")["c"].resample("5min").max().ffill()
-    per_min = ev.set_index("t")["c"].resample("1min").max().dropna()
+    per_min = hyp.per_minute_level(ev)
+    per_min = per_min[per_min > 0]  # minutes avec au moins une requête en cours
     conc = {
         "max": int(ev["c"].max()),
         "p99_min": float(per_min.quantile(0.99)) if len(per_min) else None,
@@ -420,8 +455,17 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
     conc["peak_at"] = f"{peak_t:%d/%m %H:%M}"
     daily_conc = conc_5m.resample("1D").max().to_frame("concurrence max")
 
+    df["prompt_tokens"] = df["prompt_tokens"].fillna(0).astype(int)
+    cont_table, cont_verdict = hyp.contention(df, SMALL_PROMPT, LARGE_PROMPT)
+    small_ttft = df.loc[df["prompt_tokens"] < SMALL_PROMPT, "ttft"]
+
     out = {
         "n": len(df), "by_team": by_team, "by_user": by_user, "by_base": by_base, "conc": conc,
+        "by_size": hyp.ttft_by_bucket(df, SMALL_PROMPT, LARGE_PROMPT),
+        "contention": cont_table, "verdict": cont_verdict,
+        "small_ttft_p95": small_ttft.quantile(0.95) if small_ttft.notna().any() else None,
+        "key_conc": hyp.key_concurrency(df),
+        "top": hyp.top_prompts(df),
         "chart_conc": chart_lines(daily_conc, "Concurrence max par jour (gateway, exacte)", "requêtes simultanées", kind="bar"),
         "ttft_global_p95": df["ttft"].quantile(0.95),
         "fail_rate": (df["status"].eq("failure").mean() if df["status"].notna().any() else None),
@@ -432,6 +476,9 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
 # --- diagnostic -----------------------------------------------------------------------
 def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
     notes = []
+    if sl and sl.get("verdict"):
+        notes.append({**sl["verdict"], "stack": "hypothèse"})
+    small_ttft = (sl or {}).get("small_ttft_p95")
     t = eng.get("table")
     if t is not None and not t.empty:
         for _, r in t.iterrows():
@@ -444,17 +491,22 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
                 sat = True
                 notes.append({"lvl": "warn", "stack": s, "txt":
                     f"File d'attente présente {wait:.0%} du temps alors que le KV cache reste modéré (p95 {kvp or 0:.0%}) : "
-                    "le scheduler limite. Piste : augmenter --max-num-seqs / --max-num-batched-tokens, puis revérifier l'ITL."})
+                    "les places (--max-num-seqs) sont occupées. Avant d'en ajouter, vérifier qui les occupe (concurrence "
+                    "par clé) et si de longues lectures les monopolisent : sur GB10, plus de places dégrade l'ITL de tous."})
             if (kv90 is not None and kv90 > 0.05) or (pre is not None and pre > 0):
                 sat = True
                 notes.append({"lvl": "warn", "stack": s, "txt":
                     f"Pression mémoire : KV > 90 % pendant {(kv90 or 0):.0%} du temps, {int(pre or 0)} préemption(s). "
                     "Pistes : réduire --max-model-len si inutile, KV cache FP8, ou limiter la concurrence."})
-            if ttft is not None and ttft > SLO_TTFT and (itl is None or itl <= SLO_ITL):
+            # Le TTFT global mélange gros et petits prompts : on juge sur les petits (SpendLogs) quand c'est possible
+            ref, ref_lbl = (small_ttft, f"des requêtes < {SMALL_PROMPT // 1000}k (global, gateway)") \
+                if small_ttft is not None else (ttft, "global (inclut les gros prompts)")
+            if ref is not None and ref > SLO_TTFT and (itl is None or itl <= SLO_ITL):
                 sat = True
                 notes.append({"lvl": "warn", "stack": s, "txt":
-                    f"TTFT p95 {ttft:.2f}s > SLO {SLO_TTFT}s avec un ITL correct : goulot au prefill. "
-                    "Pistes : chunked prefill / --max-num-batched-tokens, vérifier le prefix caching, limiter les très gros prompts."})
+                    f"TTFT p95 {ref_lbl} {ref:.2f}s > SLO {SLO_TTFT}s avec un ITL correct : goulot au prefill. "
+                    "Pistes : vérifier le prefix caching et l'affinité de routage, --long-prefill-token-threshold, "
+                    "limiter les très gros prompts."})
             if itl is not None and itl > SLO_ITL:
                 sat = True
                 notes.append({"lvl": "warn", "stack": s, "txt":
@@ -553,10 +605,14 @@ def build(per: Period) -> Path:
         kpis=kpis, notes=notes, slo_ttft=SLO_TTFT, slo_itl=SLO_ITL, anonymized=ANONYMIZE,
         gw={"team": df_html(gw["by_team"]), "user": df_html(gw["by_user"]),
             "chart_daily": gw["chart_daily"], "chart_heatmap": gw["chart_heatmap"]},
-        eng={"table": df_html(eng["table"]), "chart_conc": eng["chart_conc"], "chart_kv": eng["chart_kv"]},
+        eng={"table": df_html(eng["table"]), "chart_conc": eng["chart_conc"], "chart_kv": eng["chart_kv"],
+             "canary": df_html(eng["canary"]) if not eng["canary"].empty else None, "chart_canary": eng["chart_canary"]},
+        small=SMALL_PROMPT, large=LARGE_PROMPT,
         sl=None if sl is None else ({"error": sl["error"]} if "error" in sl else {
             "n": fmt_num(sl["n"]), "team": df_html(sl["by_team"]), "user": df_html(sl["by_user"]),
-            "base": df_html(sl["by_base"]), "chart_conc": sl["chart_conc"]}),
+            "base": df_html(sl["by_base"]), "chart_conc": sl["chart_conc"],
+            "by_size": df_html(sl["by_size"]), "contention": df_html(sl["contention"]), "verdict": sl["verdict"],
+            "key_conc": df_html(sl["key_conc"]), "top": df_html(sl["top"])}),
     )
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"rapport-llm_{per.slug}.html"
@@ -570,6 +626,12 @@ def build(per: Period) -> Path:
         write_csv(per, "spendlogs_par_team", sl["by_team"])
         write_csv(per, "spendlogs_par_utilisateur", sl["by_user"])
         write_csv(per, "spendlogs_par_stack", sl["by_base"])
+        write_csv(per, "hypothese_ttft_par_taille", sl["by_size"])
+        write_csv(per, "hypothese_petites_requetes", sl["contention"])
+        write_csv(per, "concurrence_par_cle", sl["key_conc"])
+        write_csv(per, "plus_gros_prompts", sl["top"])
+    if not eng["canary"].empty:
+        write_csv(per, "sonde_temoin", eng["canary"])
     print(f"✔ {out}")
     return out
 
@@ -579,7 +641,7 @@ def check() -> int:
     p = Prom(PROM_URL)
     ok = True
     print(f"Prometheus : {PROM_URL}")
-    for r in p.instant('up{job=~"litellm|vllm"}', datetime.now(TZ)):
+    for r in p.instant('up{job=~"litellm|vllm|canary"}', datetime.now(TZ)):
         m = r["metric"]
         state = "UP " if r["value"][1] == "1" else "DOWN"
         ok &= state == "UP "
@@ -588,8 +650,8 @@ def check() -> int:
     print("\nMétriques attendues :")
     for key, rx in M.items():
         found = [nm for nm in names if re.fullmatch(rx, nm)]
-        mark = "✔" if found else "✘"
-        ok &= bool(found)
+        mark = "✔" if found else ("–" if key in OPTIONAL else "✘")
+        ok &= bool(found) or key in OPTIONAL
         print(f"  {mark} {key:8} {', '.join(found) or '(absente : ' + rx + ')'}")
     sample = p.instant(f"count by (team_alias, user, api_key_alias) ({sel('req')})", datetime.now(TZ))
     print(f"\nCombinaisons team/user/clé vues par Prometheus : {len(sample)}")

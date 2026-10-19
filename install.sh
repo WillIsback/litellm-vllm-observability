@@ -195,6 +195,16 @@ elif [ "${VLLM_UP:-0}" = 1 ]; then
 fi
 ok "cibles Prometheus écrites (api_base doit être identique à celui du config.yaml LiteLLM)"
 
+# Sonde témoin : par défaut, une cible par master vLLM (même clé que le scrape /metrics)
+if ! grep -q '^CANARY_TARGETS=.' .env; then
+  CT=""
+  for t in "${T[@]}"; do t="$(clean_addr "$t")"; [ -n "$t" ] && CT="${CT:+$CT,}${t%%=*}=http://${t#*=}/v1"; done
+  grep -q '^CANARY_TARGETS=' .env || printf '\nCANARY_TARGETS=\nCANARY_API_KEY=\n' >>.env
+  setenv CANARY_TARGETS "$CT"
+  [ -s prometheus/secrets/vllm_metrics_key ] && setenv CANARY_API_KEY "$(cat prometheus/secrets/vllm_metrics_key)"
+  [ -n "$CT" ] && ok "sonde témoin : $CT ${D}(ajouter la gateway avec une clé LiteLLM « canary » : voir README)${Z}"
+fi
+
 [ "${NO_START:-0}" = 1 ] && { say; say "Démarrer : ${B}cd $DIR && docker compose up -d${Z}"; exit 0; }
 
 step "Démarrage de la stack"
@@ -202,10 +212,11 @@ docker compose up -d
 # prometheus.yml / secrets ne sont relus qu'au rechargement (les fichiers de cibles, eux, sont rechargés à chaud)
 docker compose kill -s SIGHUP prometheus >/dev/null 2>&1 && ok "configuration Prometheus rechargée"
 PROM_PORT="$(grep '^PROM_PORT=' .env | cut -d= -f2)"; PROM_PORT="${PROM_PORT:-9090}"
+BIND="$(grep '^BIND_ADDR=' .env | cut -d= -f2)"; BIND="${BIND:-127.0.0.1}"
 if command -v curl >/dev/null; then
   say "${D}Attente du premier scrape des cibles…${Z}"
   for _ in $(seq 1 20); do
-    TG="$(curl -s -m 3 "http://localhost:$PROM_PORT/api/v1/targets?state=active" 2>/dev/null || true)"
+    TG="$(curl -s -m 3 "http://$BIND:$PROM_PORT/api/v1/targets?state=active" 2>/dev/null || true)"
     case "$TG" in *'"health":"unknown"'*|"") sleep 2;; *) break;; esac
   done
   # cibles en erreur : afficher la raison renvoyée par Prometheus
@@ -230,6 +241,7 @@ docker compose run --rm reporter check || warn "check en erreur : voir la sortie
 
 PORT="$(grep '^GF_PORT=' .env | cut -d= -f2)"
 step "Terminé"
-say "Grafana : ${B}http://localhost:${PORT:-3000}${Z}  (utilisateur ${B}admin${Z}, dossier « LLM Observability »)"
+say "Grafana : ${B}http://$BIND:${PORT:-3000}${Z}  (utilisateur ${B}admin${Z}, dossier « LLM Observability »)"
+[ "$BIND" = 127.0.0.1 ] && say "${D}Grafana et Prometheus n'écoutent qu'en local : tunnel SSH (ssh -L 3000:127.0.0.1:3000 …) ou BIND_ADDR=<IP d'admin> dans .env${Z}"
 [ -n "${GEN:-}" ] && [ "${GF_ADMIN_PASSWORD:-}" = "$GEN" ] && say "Mot de passe généré : ${B}$GF_ADMIN_PASSWORD${Z}  ${D}(stocké dans $DIR/.env)${Z}"
 say "Rapport : ${D}cd $DIR && docker compose run --rm reporter --previous-month${Z}"
