@@ -14,7 +14,7 @@ curl -fsSL https://raw.githubusercontent.com/WillIsback/litellm-vllm-observabili
 Le script clone le dépôt, génère `.env`, écrit les cibles Prometheus (questions interactives, ou variables
 `LITELLM_TARGET`, `VLLM_TARGETS="stack-a=10.0.0.21:8000,stack-b=10.0.0.31:8000"`, `LITELLM_PG_HOST`,
 `LITELLM_PG_PASSWORD`, `INSTALL_DIR`, `NO_START=1`), lance la stack et exécute `check`.
-Grafana : http://localhost:3000, dossier **« LLM - Équipe dev »**.
+Grafana : http://localhost:3000, dossier **« LLM Observability »**.
 
 Rapport : `docker compose run --rm reporter [--previous-month | --start AAAA-MM-JJ --end AAAA-MM-JJ]`
 → `./reports/rapport-llm_<période>.html` + CSV.

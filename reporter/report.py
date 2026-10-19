@@ -179,7 +179,7 @@ def parse_period(a: argparse.Namespace) -> Period:
 @dataclass
 class Anon:
     enabled: bool
-    prefix: str = "dev"
+    prefix: str = "user"
     mapping: dict = field(default_factory=dict)
 
     def __call__(self, v):
@@ -477,7 +477,7 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
             who = users.iloc[int(tot.values.argmax())]
             if share > 0.4:
                 any_sat = any(n_["lvl"] == "warn" for n_ in notes)
-                notes.append({"lvl": "warn" if any_sat else "info", "stack": "équipe", "txt":
+                notes.append({"lvl": "warn" if any_sat else "info", "stack": "global", "txt":
                     f"{who.get('Utilisateur', '?')} ({who.get('Clé', '?')}) concentre {share:.0%} des tokens. "
                     + ("Combiné aux signaux de saturation : envisager une limite par clé (max_parallel_requests / tpm_limit dans LiteLLM)."
                        if any_sat else "Sans saturation, pas d'action nécessaire ; à surveiller.")})

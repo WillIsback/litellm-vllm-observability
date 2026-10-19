@@ -48,4 +48,4 @@ echo "✓ cibles Prometheus écrites"
 [ "${NO_START:-0}" = 1 ] && { echo "Démarrer : cd $DIR && docker compose up -d"; exit 0; }
 docker compose up -d
 docker compose run --rm reporter check || true
-echo "✓ Grafana : http://localhost:$(grep ^GF_PORT= .env | cut -d= -f2)  (dossier « LLM - Équipe dev »)"
+echo "✓ Grafana : http://localhost:$(grep ^GF_PORT= .env | cut -d= -f2)  (dossier « LLM Observability »)"

@@ -1,6 +1,6 @@
 {
   "uid": "llm-litellm-usage",
-  "title": "LiteLLM — Usage équipe dev",
+  "title": "LiteLLM — Usage par team",
   "description": "Vue gateway : charge et latence par team / utilisateur / clé, santé des déploiements.",
   "editable": true,
   "schemaVersion": 39,

@@ -1,7 +1,7 @@
 apiVersion: 1
 providers:
   - name: llm-observability
-    folder: "LLM - Équipe dev"
+    folder: "LLM Observability"
     type: file
     disableDeletion: false
     allowUiUpdates: true
