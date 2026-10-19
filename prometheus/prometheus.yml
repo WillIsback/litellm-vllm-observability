@@ -23,6 +23,11 @@ scrape_configs:
     metrics_path: /metrics
     file_sd_configs:
       - files: [/etc/prometheus/targets/vllm.yml]
+    # Si /metrics est protégé (vLLM --api-key), décommenter et placer la clé dans
+    # prometheus/secrets/vllm_metrics_key
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/secrets/vllm_metrics_key
 
   # Optionnel : métriques système des 4 nœuds GB10 (node_exporter sur :9100)
   # - job_name: node
