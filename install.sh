@@ -59,7 +59,16 @@ probe() { # probe hôte:port chemin [clé API]
   esac
 }
 enable_auth() { # enable_auth job fichier-clé : décommente le bloc authorization du job dans prometheus.yml
-  sed -i -E "/job_name: $1\$/,/^  - job_name/ s/^(    )# (authorization:|  type: Bearer|  credentials_file: .*$2)\$/\1\2/" prometheus/prometheus.yml
+  sed -i -E "/job_name: $1\$/,/^  - job_name/ s/^(    )# (authorization:|  type: Bearer|  credentials_file: .*$2)\$/\\1\\2/" prometheus/prometheus.yml
+  if grep -q "^      credentials_file: /etc/prometheus/secrets/$2" prometheus/prometheus.yml; then return 0; fi
+  warn "bloc authorization introuvable pour le job $1 : décommenter à la main dans prometheus/prometheus.yml"
+  return 1
+}
+# scrape_from_container URL [fichier-clé] : requête faite depuis le conteneur Prometheus (réseau + clé telle que lue par lui)
+scrape_from_container() {
+  docker compose exec -T prometheus sh -c '
+    if [ -n "$2" ]; then wget -q -O /dev/null -T 5 --header "Authorization: Bearer $(cat "$2")" "$1"
+    else wget -q -O /dev/null -T 5 "$1"; fi' _ "$1" "${2:-}" 2>/dev/null
 }
 
 say "${B}LiteLLM + vLLM observability${Z} — installation"
@@ -141,6 +150,9 @@ if [ "$USE_LITELLM" = 1 ]; then
       enable_auth litellm litellm_metrics_key
       ok "clé enregistrée, authentification Bearer activée dans prometheus.yml"
       probe "$LITELLM_TARGET" /metrics/ "$LITELLM_METRICS_KEY"
+    elif [ -s prometheus/secrets/litellm_metrics_key ]; then
+      enable_auth litellm litellm_metrics_key
+      ok "clé LiteLLM existante conservée (prometheus/secrets/litellm_metrics_key)"
     fi
   fi
 else
@@ -174,6 +186,9 @@ if [ "${VLLM_AUTH:-0}" = 1 ] || [ -n "${VLLM_METRICS_KEY:-}" ]; then
     enable_auth vllm vllm_metrics_key
     ok "clé vLLM enregistrée, authentification Bearer activée"
     for t in "${T[@]}"; do t="$(clean_addr "$t")"; [ -n "$t" ] && probe "${t#*=}" /metrics "$VLLM_METRICS_KEY"; done
+  elif [ -s prometheus/secrets/vllm_metrics_key ]; then
+    VLLM_METRICS_KEY="$(cat prometheus/secrets/vllm_metrics_key)"; enable_auth vllm vllm_metrics_key
+    ok "clé vLLM existante conservée (prometheus/secrets/vllm_metrics_key)"
   fi
 elif [ "${VLLM_UP:-0}" = 1 ]; then
   ok "/metrics vLLM accessible sans clé : aucune clé nécessaire pour la collecte"
@@ -196,6 +211,20 @@ if command -v curl >/dev/null; then
   # cibles en erreur : afficher la raison renvoyée par Prometheus
   printf '%s' "$TG" | grep -o '"scrapeUrl":"[^"]*"[^}]*"lastError":"[^"]\+"' | sed -E 's/"scrapeUrl":"([^"]*)".*"lastError":"([^"]*)"/\1 → \2/' | while read -r l; do warn "cible en erreur : $l"; done || true
 fi
+
+step "Test depuis le conteneur Prometheus"
+if [ "$USE_LITELLM" = 1 ] && [ -n "${LITELLM_TARGET:-}" ]; then
+  KF=""; [ -s prometheus/secrets/litellm_metrics_key ] && KF=/etc/prometheus/secrets/litellm_metrics_key
+  if scrape_from_container "http://$LITELLM_TARGET/metrics/" "$KF"; then ok "LiteLLM $LITELLM_TARGET : OK${KF:+ (avec clé)}"
+  else warn "LiteLLM $LITELLM_TARGET : échec depuis le conteneur (réseau, ou clé absente/invalide)"; fi
+fi
+KF=""; [ -s prometheus/secrets/vllm_metrics_key ] && KF=/etc/prometheus/secrets/vllm_metrics_key
+for t in "${T[@]}"; do
+  t="$(clean_addr "$t")"; [ -n "$t" ] || continue
+  if scrape_from_container "http://${t#*=}/metrics" "$KF"; then ok "vLLM ${t%%=*} (${t#*=}) : OK${KF:+ (avec clé)}"
+  elif [ -n "$KF" ]; then warn "vLLM ${t%%=*} (${t#*=}) : échec avec la clé de prometheus/secrets/vllm_metrics_key (valeur incorrecte ou réseau)"
+  else warn "vLLM ${t%%=*} (${t#*=}) : échec sans clé (/metrics protégé : relancer l'installation et saisir la clé, ou réseau)"; fi
+done
 step "Vérification des métriques"
 docker compose run --rm reporter check || warn "check en erreur : voir la sortie ci-dessus (les cibles peuvent mettre ~30 s à passer UP)"
 
