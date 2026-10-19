@@ -518,7 +518,7 @@
       "id": 30,
       "type": "timeseries",
       "title": "Débit tokens / s (prefill vs génération)",
-      "description": "",
+      "description": "Attention : vllm:prompt_tokens_total n'est incrémenté qu'à la FIN d'une lecture. Un prefill de plusieurs minutes reste invisible ici puis apparaît comme un pic. Pendant une longue lecture, regarder plutôt les requêtes en attente, la sonde témoin et la puissance GPU (dcgm-exporter).",
       "datasource": {
         "type": "prometheus",
         "uid": "prom-llm"
@@ -856,6 +856,407 @@
       "fieldConfig": {
         "defaults": {
           "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Lecture réelle et taille des prompts",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 201,
+      "type": "timeseries",
+      "title": "Tokens de prompt : calculés vs servis par le cache",
+      "description": "La vraie charge de lecture est la partie calculée. Beaucoup de tokens « cache » = conversations longues bien servies ; peu = contextes réécrits ou routés vers une autre stack (affinité perdue).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (provider) (rate({__name__=~\"vllm:prompt_tokens(_total)?\",provider=~\"$provider\"}[$__rate_interval])) - sum by (provider) (rate({__name__=~\"vllm:prompt_tokens_cached(_total)?\",provider=~\"$provider\"}[$__rate_interval]))",
+          "legendFormat": "{{provider}} calculés",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (provider) (rate({__name__=~\"vllm:prompt_tokens_cached(_total)?\",provider=~\"$provider\"}[$__rate_interval]))",
+          "legendFormat": "{{provider}} cache",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 202,
+      "type": "timeseries",
+      "title": "Taille des prompts (p50 / p95 / p99)",
+      "description": "Distribution des tailles de contexte reçues par le moteur.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 40,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, provider) (rate({__name__=~\"vllm:request_prompt_tokens_bucket\",provider=~\"$provider\"}[$__rate_interval])))",
+          "legendFormat": "{{provider}} p50",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, provider) (rate({__name__=~\"vllm:request_prompt_tokens_bucket\",provider=~\"$provider\"}[$__rate_interval])))",
+          "legendFormat": "{{provider}} p95",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, provider) (rate({__name__=~\"vllm:request_prompt_tokens_bucket\",provider=~\"$provider\"}[$__rate_interval])))",
+          "legendFormat": "{{provider}} p99",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 203,
+      "type": "timeseries",
+      "title": "Temps de lecture (prefill) p50 / p95",
+      "description": "Durée de la phase de lecture, file d'attente exclue.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 40,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, provider) (rate({__name__=~\"vllm:request_prefill_time_seconds_bucket\",provider=~\"$provider\"}[$__rate_interval])))",
+          "legendFormat": "{{provider}} p50",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, provider) (rate({__name__=~\"vllm:request_prefill_time_seconds_bucket\",provider=~\"$provider\"}[$__rate_interval])))",
+          "legendFormat": "{{provider}} p95",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 204,
+      "type": "row",
+      "title": "Sonde témoin (expérience d'un utilisateur ordinaire)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 205,
+      "type": "timeseries",
+      "title": "Sonde témoin : délai avant premier token",
+      "description": "Petite requête fixe envoyée chaque minute à chaque cible (service canary). Indépendante du mélange de trafic : c'est la courbe à montrer aux utilisateurs.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "canary_last_ttft_seconds",
+          "legendFormat": "{{target}} dernière sonde",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, target) (rate(canary_ttft_seconds_bucket[15m])))",
+          "legendFormat": "{{target}} p95 15 min",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 206,
+      "type": "stat",
+      "title": "Sonde témoin : % de sondes à plus de 10 s (période)",
+      "description": "Part des sondes qui ont attendu plus de 10 s avant le premier token sur la période sélectionnée.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 49,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "1 - sum by (target) (increase(canary_ttft_seconds_bucket{le=\"10\"}[$__range])) / clamp_min(sum by (target) (increase(canary_ttft_seconds_bucket{le=\"+Inf\"}[$__range])), 1)",
+          "legendFormat": "{{target}}",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 207,
+      "type": "timeseries",
+      "title": "Sonde témoin : échecs et sondes en attente",
+      "description": "Échecs (HTTP, timeout) par heure et sondes encore en attente de réponse.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 49,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (target) (increase(canary_requests_total{status!=\"ok\"}[1h]))",
+          "legendFormat": "{{target}} échecs / h",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "canary_inflight",
+          "legendFormat": "{{target}} en attente",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,

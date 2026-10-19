@@ -1,7 +1,7 @@
 {
   "uid": "llm-spendlogs",
   "title": "LiteLLM — SpendLogs (données exactes par requête)",
-  "description": "Source : table LiteLLM_SpendLogs (Postgres LiteLLM), rôle lecture seule.",
+  "description": "Données exactes par requête (LiteLLM_SpendLogs). Identités pseudonymisées par défaut (variable « Identités »). Section du haut : test de l'hypothèse « les gros prompts ralentissent les autres ».",
   "editable": true,
   "schemaVersion": 39,
   "version": 1,
@@ -16,9 +16,500 @@
     "to": "now"
   },
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "identite",
+        "label": "Identités",
+        "type": "custom",
+        "query": "pseudonyme,nominatif",
+        "current": {
+          "text": "pseudonyme",
+          "value": "pseudonyme"
+        },
+        "options": [
+          {
+            "text": "pseudonyme",
+            "value": "pseudonyme",
+            "selected": true
+          },
+          {
+            "text": "nominatif",
+            "value": "nominatif",
+            "selected": false
+          }
+        ],
+        "description": "Pseudonyme par défaut. Le mode nominatif ne protège rien à lui seul : restreindre l'accès au dossier Grafana."
+      },
+      {
+        "name": "petit",
+        "label": "Petite requête < (tokens)",
+        "type": "textbox",
+        "query": "8000",
+        "current": {
+          "text": "8000",
+          "value": "8000"
+        }
+      },
+      {
+        "name": "gros",
+        "label": "Gros prompt ≥ (tokens)",
+        "type": "textbox",
+        "query": "100000",
+        "current": {
+          "text": "100000",
+          "value": "100000"
+        }
+      }
+    ]
   },
   "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Hypothèse : les très gros prompts ralentissent-ils les autres ?",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 101,
+      "type": "table",
+      "title": "Petites requêtes : TTFT avec / sans gros prompt d'un autre utilisateur en lecture (même stack)",
+      "description": "Le test central. Petite requête : prompt < $petit tokens, streamée. « Avec » : un prompt ≥ $gros tokens d'une autre clé était entre son début et son premier token sur la même stack pendant que la petite requête était en cours (la gêne touche le premier token ET l'écriture : comparer aussi la durée). Un écart net (×2 sur la médiane, ×3 sur le p95, ≥ 30 requêtes de chaque côté) confirme l'hypothèse ; aucun écart l'infirme.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "WITH r AS (\n  SELECT s.\"startTime\" AS st, s.\"endTime\" AS en, s.\"completionStartTime\" AS ft, COALESCE(s.prompt_tokens, 0) AS pt,\n         rtrim(s.api_base, '/') AS api_base, s.api_key  -- « …/v1/ » (non streamé) = « …/v1 » (streamé)\n  FROM \"LiteLLM_SpendLogs\" s WHERE $__timeFilter(s.\"startTime\")\n), h AS (  -- gros prompts : fenêtre de lecture = début -> premier token (ou fin si non streamé)\n  SELECT st, CASE WHEN ft > st AND ft <= en THEN ft ELSE en END AS pe, api_base, api_key FROM r WHERE pt >= $gros\n), p AS (  -- petites requêtes streamées, marquées si un gros prompt d'une AUTRE clé est en lecture sur la même stack\n  SELECT r.st, EXTRACT(EPOCH FROM (r.ft - r.st)) AS ttft, EXTRACT(EPOCH FROM (r.en - r.st)) AS dur,\n         EXISTS (SELECT 1 FROM h WHERE h.api_base = r.api_base AND h.api_key IS DISTINCT FROM r.api_key\n                                    AND h.st < r.en AND h.pe > r.st) AS gros\n  FROM r WHERE r.pt < $petit AND r.ft > r.st AND r.ft < r.en\n)\nSELECT CASE WHEN gros THEN 'Avec gros prompt en lecture' ELSE 'Sans gros prompt en lecture' END AS \"Petites requêtes\",\n  count(*) AS \"Requêtes\",\n  percentile_cont(0.5) WITHIN GROUP (ORDER BY ttft) AS \"TTFT p50\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft) AS \"TTFT p95\",\n  percentile_cont(0.5) WITHIN GROUP (ORDER BY dur) AS \"Durée p50\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY dur) AS \"Durée p95\"\nFROM p GROUP BY gros ORDER BY gros",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TTFT p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TTFT p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Durée p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Durée p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 102,
+      "type": "table",
+      "title": "TTFT par taille de prompt",
+      "description": "Un gros prompt a naturellement un TTFT élevé (temps de lecture). C'est la ligne des petites requêtes qui mesure la gêne subie ; « Part tokens in » montre qui consomme la capacité de lecture.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "SELECT CASE WHEN COALESCE(s.prompt_tokens, 0) < $petit THEN '1 · petite (< $petit)'\n            WHEN s.prompt_tokens < GREATEST(32000, $petit) THEN '2 · < 32 000'\n            WHEN s.prompt_tokens < $gros THEN '3 · < $gros'\n            ELSE '4 · gros (≥ $gros)' END AS \"Taille du prompt\",\n  count(*) AS \"Requêtes\", count(DISTINCT s.api_key) AS \"Clés\",\n  sum(s.prompt_tokens)::float / NULLIF(sum(sum(s.prompt_tokens)) OVER (), 0) AS \"Part tokens in\",\n  percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\")))\n    FILTER (WHERE s.\"completionStartTime\" > s.\"startTime\" AND s.\"completionStartTime\" < s.\"endTime\") AS \"TTFT p50\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\")))\n    FILTER (WHERE s.\"completionStartTime\" > s.\"startTime\" AND s.\"completionStartTime\" < s.\"endTime\") AS \"TTFT p95\"\nFROM \"LiteLLM_SpendLogs\" s\nWHERE $__timeFilter(s.\"startTime\")\nGROUP BY 1 ORDER BY 1",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Part tokens in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TTFT p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TTFT p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 103,
+      "type": "timeseries",
+      "title": "TTFT p95 des petites requêtes vs volume des gros prompts",
+      "description": "Si les courbes « avec gros en lecture » et les barres montent ensemble, la corrélation est visible dans le temps. Zoomer sur un ralentissement signalé.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "WITH r AS (\n  SELECT s.\"startTime\" AS st, s.\"endTime\" AS en, s.\"completionStartTime\" AS ft, COALESCE(s.prompt_tokens, 0) AS pt,\n         rtrim(s.api_base, '/') AS api_base, s.api_key  -- « …/v1/ » (non streamé) = « …/v1 » (streamé)\n  FROM \"LiteLLM_SpendLogs\" s WHERE $__timeFilter(s.\"startTime\")\n), h AS (  -- gros prompts : fenêtre de lecture = début -> premier token (ou fin si non streamé)\n  SELECT st, CASE WHEN ft > st AND ft <= en THEN ft ELSE en END AS pe, api_base, api_key FROM r WHERE pt >= $gros\n), p AS (  -- petites requêtes streamées, marquées si un gros prompt d'une AUTRE clé est en lecture sur la même stack\n  SELECT r.st, EXTRACT(EPOCH FROM (r.ft - r.st)) AS ttft, EXTRACT(EPOCH FROM (r.en - r.st)) AS dur,\n         EXISTS (SELECT 1 FROM h WHERE h.api_base = r.api_base AND h.api_key IS DISTINCT FROM r.api_key\n                                    AND h.st < r.en AND h.pe > r.st) AS gros\n  FROM r WHERE r.pt < $petit AND r.ft > r.st AND r.ft < r.en\n)\nSELECT $__timeGroupAlias(st, $__interval),\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft) FILTER (WHERE NOT gros) AS \"TTFT p95 petites (sans gros en lecture)\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft) FILTER (WHERE gros) AS \"TTFT p95 petites (avec gros en lecture)\"\nFROM p GROUP BY 1 ORDER BY 1",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "SELECT $__timeGroupAlias(s.\"startTime\", $__interval), sum(s.prompt_tokens) AS \"Tokens des gros prompts\"\nFROM \"LiteLLM_SpendLogs\" s\nWHERE $__timeFilter(s.\"startTime\") AND s.prompt_tokens >= $gros\nGROUP BY 1 ORDER BY 1",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tokens des gros prompts"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "bars"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 40
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 104,
+      "type": "table",
+      "title": "Requêtes simultanées par clé (dimensionnement de max_parallel_requests)",
+      "description": "« Minutes > N » : minutes d'activité où la clé aurait été bridée par une limite LiteLLM à N requêtes simultanées. Choisir la limite qui ne bride que les usages extrêmes.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "WITH ev AS (\n  SELECT s.api_key AS kid, s.\"startTime\" AS ts, 1 AS d FROM \"LiteLLM_SpendLogs\" s WHERE $__timeFilter(s.\"startTime\")\n  UNION ALL\n  SELECT s.api_key, s.\"endTime\", -1 FROM \"LiteLLM_SpendLogs\" s WHERE $__timeFilter(s.\"startTime\")\n), c AS (\n  SELECT kid, ts, d, sum(d) OVER (PARTITION BY kid ORDER BY ts, d ROWS UNBOUNDED PRECEDING) AS conc FROM ev\n), iv AS (  -- chaque niveau de concurrence tient jusqu'à l'événement suivant\n  SELECT kid, ts, lead(ts) OVER (PARTITION BY kid ORDER BY ts, d) AS nxt, conc FROM c\n), m AS (   -- niveau max par minute, minutes sans événement comprises\n  SELECT kid, g.mn, max(conc) AS mx\n  FROM iv, generate_series(date_trunc('minute', ts), COALESCE(nxt, ts), interval '1 minute') AS g(mn)\n  WHERE conc > 0 GROUP BY 1, 2\n), agg AS (\n  SELECT kid, max(mx) AS pic, percentile_cont(0.95) WITHIN GROUP (ORDER BY mx) AS p95, count(*) AS minutes,\n         count(*) FILTER (WHERE mx > 2) AS m2, count(*) FILTER (WHERE mx > 3) AS m3, count(*) FILTER (WHERE mx > 4) AS m4\n  FROM m GROUP BY kid\n)\nSELECT CASE WHEN '$identite' = 'nominatif' THEN COALESCE(u.user_email, NULLIF(k.user_id, ''), '(inconnu)') ELSE 'user-' || left(md5(COALESCE(NULLIF(k.user_id, ''), agg.kid, '')), 6) END AS \"Utilisateur\",\n       CASE WHEN '$identite' = 'nominatif' THEN COALESCE(k.key_alias, '(sans alias)') ELSE 'clé-' || left(md5(COALESCE(agg.kid, '')), 6) END AS \"Clé\",\n       pic AS \"Pic simultané\", p95 AS \"Simultané p95 (minutes actives)\", minutes AS \"Minutes actives\",\n       m2 AS \"Minutes > 2\", m3 AS \"Minutes > 3\", m4 AS \"Minutes > 4\"\nFROM agg\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = agg.kid\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = k.user_id\nORDER BY pic DESC, minutes DESC",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Simultané p95 (minutes actives)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 105,
+      "type": "table",
+      "title": "Les 20 plus gros prompts de la période",
+      "description": "Pour relier un ralentissement signalé (heure) à un événement précis.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pg-litellm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pg-litellm"
+          },
+          "rawSql": "SELECT s.\"startTime\" AS \"Début\", CASE WHEN '$identite' = 'nominatif' THEN COALESCE(u.user_email, NULLIF(s.\"user\", ''), '(inconnu)') ELSE 'user-' || left(md5(COALESCE(NULLIF(s.\"user\", ''), s.api_key, '')), 6) END AS \"Utilisateur\", CASE WHEN '$identite' = 'nominatif' THEN COALESCE(k.key_alias, '(sans alias)') ELSE 'clé-' || left(md5(COALESCE(s.api_key, '')), 6) END AS \"Clé\", rtrim(s.api_base, '/') AS \"Stack\",\n  s.prompt_tokens AS \"Tokens in\",\n  CASE WHEN s.\"completionStartTime\" > s.\"startTime\" AND s.\"completionStartTime\" < s.\"endTime\"\n       THEN EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\")) END AS \"TTFT\",\n  EXTRACT(EPOCH FROM (s.\"endTime\" - s.\"startTime\")) AS \"Durée\"\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\")\nORDER BY s.prompt_tokens DESC NULLS LAST LIMIT 20",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TTFT"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Durée"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Début"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 106,
+      "type": "row",
+      "title": "Usage détaillé",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
     {
       "id": 37,
       "type": "table",
@@ -30,7 +521,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 35,
         "w": 24,
         "h": 7
       },
@@ -64,7 +555,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 7,
+        "y": 42,
         "w": 24,
         "h": 9
       },
@@ -74,7 +565,7 @@
             "type": "grafana-postgresql-datasource",
             "uid": "pg-litellm"
           },
-          "rawSql": "SELECT COALESCE(t.team_alias, s.team_id, '(sans team)') AS \"Team\", COALESCE(u.user_email, NULLIF(s.\"user\", ''), '(inconnu)') AS \"Utilisateur\",\n  COALESCE(k.key_alias, '(sans alias)') AS \"Clé\",\n  count(*) AS \"Requêtes\", sum(s.prompt_tokens) AS \"Tokens in\", sum(s.completion_tokens) AS \"Tokens out\",\n  round(avg(s.prompt_tokens)) AS \"Prompt moyen\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\"))) FILTER (WHERE s.\"completionStartTime\" > s.\"startTime\") AS \"TTFT p95 (s)\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"endTime\" - s.\"startTime\"))) AS \"Durée p95 (s)\"\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_TeamTable\" t ON t.team_id = s.team_id\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\")\nGROUP BY 1,2,3 ORDER BY 4 DESC",
+          "rawSql": "SELECT COALESCE(t.team_alias, s.team_id, '(sans team)') AS \"Team\", CASE WHEN '$identite' = 'nominatif' THEN COALESCE(u.user_email, NULLIF(s.\"user\", ''), '(inconnu)') ELSE 'user-' || left(md5(COALESCE(NULLIF(s.\"user\", ''), s.api_key, '')), 6) END AS \"Utilisateur\",\n  CASE WHEN '$identite' = 'nominatif' THEN COALESCE(k.key_alias, '(sans alias)') ELSE 'clé-' || left(md5(COALESCE(s.api_key, '')), 6) END AS \"Clé\",\n  count(*) AS \"Requêtes\", sum(s.prompt_tokens) AS \"Tokens in\", sum(s.completion_tokens) AS \"Tokens out\",\n  round(avg(s.prompt_tokens)) AS \"Prompt moyen\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\"))) FILTER (WHERE s.\"completionStartTime\" > s.\"startTime\") AS \"TTFT p95 (s)\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"endTime\" - s.\"startTime\"))) AS \"Durée p95 (s)\"\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_TeamTable\" t ON t.team_id = s.team_id\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\")\nGROUP BY 1,2,3 ORDER BY 4 DESC",
           "rawQuery": true,
           "editorMode": "code",
           "format": "table",
@@ -98,7 +589,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 51,
         "w": 12,
         "h": 8
       },
@@ -151,7 +642,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 16,
+        "y": 51,
         "w": 12,
         "h": 8
       },
@@ -161,7 +652,7 @@
             "type": "grafana-postgresql-datasource",
             "uid": "pg-litellm"
           },
-          "rawSql": "SELECT $__timeGroupAlias(s.\"startTime\", '1d', 0), s.api_base AS metric,\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\"))) AS value\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_TeamTable\" t ON t.team_id = s.team_id\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\") AND s.\"completionStartTime\" > s.\"startTime\"\nGROUP BY 1,2 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(s.\"startTime\", '1d', 0), rtrim(s.api_base, '/') AS metric,\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (s.\"completionStartTime\" - s.\"startTime\"))) AS value\nFROM \"LiteLLM_SpendLogs\" s\nLEFT JOIN \"LiteLLM_TeamTable\" t ON t.team_id = s.team_id\nLEFT JOIN \"LiteLLM_UserTable\" u ON u.user_id = s.\"user\"\nLEFT JOIN \"LiteLLM_VerificationToken\" k ON k.token = s.api_key\nWHERE $__timeFilter(s.\"startTime\") AND s.\"completionStartTime\" > s.\"startTime\"\nGROUP BY 1,2 ORDER BY 1",
           "rawQuery": true,
           "editorMode": "code",
           "format": "time_series",
@@ -204,7 +695,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 59,
         "w": 24,
         "h": 8
       },

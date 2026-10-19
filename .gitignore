@@ -3,3 +3,5 @@ reports/*
 !reports/.gitkeep
 prometheus/secrets/*
 !prometheus/secrets/.gitkeep
+__pycache__/
+*.pyc

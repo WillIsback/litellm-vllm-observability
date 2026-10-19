@@ -1,5 +1,6 @@
 # Observabilité de l'infra LLM (LiteLLM + 2 stacks vLLM)
-# - prometheus : scrape LiteLLM /metrics + /metrics des 2 masters vLLM, rétention 45 j
+# - prometheus : scrape LiteLLM /metrics + /metrics des 2 masters vLLM + sonde, rétention 120 j
+# - canary     : sonde témoin, une petite requête fixe par cible et par minute
 # - grafana    : 3 dashboards provisionnés (usage LiteLLM, moteurs vLLM, SpendLogs Postgres)
 # - reporter   : génère le rapport mensuel HTML + CSV (lancé à la demande)
 #
@@ -15,13 +16,14 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=${PROM_RETENTION:-45d}
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-120d}
       - --web.enable-lifecycle
     volumes:
       - ./prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
     ports:
-      - "${PROM_PORT:-9090}:9090"
+      # Lié à BIND_ADDR (127.0.0.1 par défaut) : --web.enable-lifecycle permet d'arrêter Prometheus via HTTP
+      - "${BIND_ADDR:-127.0.0.1}:${PROM_PORT:-9090}:9090"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -41,7 +43,23 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "${GF_PORT:-3000}:3000"
+      - "${BIND_ADDR:-127.0.0.1}:${GF_PORT:-3000}:3000"
+
+  canary:
+    image: python:3.12-alpine
+    container_name: llmobs-canary
+    restart: unless-stopped
+    command: ["python", "-u", "/app/canary.py"]
+    environment:
+      CANARY_TARGETS: ${CANARY_TARGETS:-}
+      CANARY_API_KEY: ${CANARY_API_KEY:-}
+      CANARY_INTERVAL: ${CANARY_INTERVAL:-60}
+      TZ: Europe/Paris
+    env_file: .env                                # pour les CANARY_KEY_<NOM> éventuelles
+    volumes:
+      - ./canary/canary.py:/app/canary.py:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   reporter:
     image: ghcr.io/willisback/litellm-vllm-observability-reporter:${LLMOBS_VERSION:-latest}
