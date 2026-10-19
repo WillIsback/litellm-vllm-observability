@@ -15,7 +15,7 @@ model_list:
       api_base: http://10.0.0.31:8000/v1
 
 router_settings:
-  # Pour garder le prefix cache d'un dev sur la même stack, comparer en charge
+  # Pour garder le prefix cache d'un utilisateur sur la même stack, comparer en charge
   # les stratégies de routage (simple-shuffle, least-busy, ...).
   routing_strategy: simple-shuffle
 

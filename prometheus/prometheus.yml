@@ -2,7 +2,7 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    env: iag-dev
+    env: llm-obs
 
 scrape_configs:
   # Gateway LiteLLM : vue "client" (par team / user / clé / déploiement)

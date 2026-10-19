@@ -44,8 +44,8 @@ services:
       - "${GF_PORT:-3000}:3000"
 
   reporter:
-    build: ./reporter
-    image: llmobs-reporter:1.0
+    image: ghcr.io/willisback/litellm-vllm-observability-reporter:${LLMOBS_VERSION:-latest}
+    build: ./reporter                             # `docker compose build reporter` pour builder en local
     profiles: ["report"]                          # pas démarré par `up`, uniquement via `run`
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"   # pour pouvoir écrire dans ./reports
     env_file: .env
