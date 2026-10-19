@@ -184,6 +184,18 @@ ok "cibles Prometheus écrites (api_base doit être identique à celui du config
 
 step "Démarrage de la stack"
 docker compose up -d
+# prometheus.yml / secrets ne sont relus qu'au rechargement (les fichiers de cibles, eux, sont rechargés à chaud)
+docker compose kill -s SIGHUP prometheus >/dev/null 2>&1 && ok "configuration Prometheus rechargée"
+PROM_PORT="$(grep '^PROM_PORT=' .env | cut -d= -f2)"; PROM_PORT="${PROM_PORT:-9090}"
+if command -v curl >/dev/null; then
+  say "${D}Attente du premier scrape des cibles…${Z}"
+  for _ in $(seq 1 20); do
+    TG="$(curl -s -m 3 "http://localhost:$PROM_PORT/api/v1/targets?state=active" 2>/dev/null || true)"
+    case "$TG" in *'"health":"unknown"'*|"") sleep 2;; *) break;; esac
+  done
+  # cibles en erreur : afficher la raison renvoyée par Prometheus
+  printf '%s' "$TG" | grep -o '"scrapeUrl":"[^"]*"[^}]*"lastError":"[^"]\+"' | sed -E 's/"scrapeUrl":"([^"]*)".*"lastError":"([^"]*)"/\1 → \2/' | while read -r l; do warn "cible en erreur : $l"; done || true
+fi
 step "Vérification des métriques"
 docker compose run --rm reporter check || warn "check en erreur : voir la sortie ci-dessus (les cibles peuvent mettre ~30 s à passer UP)"
 
