@@ -53,6 +53,11 @@ EXCLUDE_KEY_ALIASES = [k.strip() for k in os.environ.get("EXCLUDE_KEY_ALIASES", 
 # en deçà, c'est la vitesse de décodage du modèle (bande passante mémoire), pas une saturation.
 CONC_ITL_MIN = 3
 AUCUN = "(aucun)"  # utilisateur sans compte rattaché (Open WebUI, sonde…) : jamais pseudonymisé ni compté comme actif
+# Libellés de colonnes réutilisés dans plusieurs tableaux (évite les littéraux dupliqués).
+COL_TOKENS_IN = "Tokens in"
+COL_TOKENS_OUT = "Tokens out"
+COL_TTFT_P50 = "TTFT p50 (s)"
+COL_TTFT_P95 = "TTFT p95 (s)"
 
 # --- noms de métriques (regex tolérantes aux changements de version) ---------
 M = {
@@ -286,9 +291,9 @@ def gateway_section(p: Prom, per: Period, anon: Anon) -> dict:
         parts = [
             p.vector_df(f"sum by ({g}) (increase({req}[{w}]))", at, labels, "Requêtes"),
             p.vector_df(f"sum by ({g}) (increase({fail}[{w}]))", at, labels, "Échecs"),
-            p.vector_df(f"sum by ({g}) (increase({sel_gw('tin')}[{w}]))", at, labels, "Tokens in"),
-            p.vector_df(f"sum by ({g}) (increase({sel_gw('tout')}[{w}]))", at, labels, "Tokens out"),
-            p.vector_df(f"histogram_quantile(0.95, sum by (le, {g}) (increase({sel_gw('ttft')}[{w}])))", at, labels, "TTFT p95 (s)"),
+            p.vector_df(f"sum by ({g}) (increase({sel_gw('tin')}[{w}]))", at, labels, COL_TOKENS_IN),
+            p.vector_df(f"sum by ({g}) (increase({sel_gw('tout')}[{w}]))", at, labels, COL_TOKENS_OUT),
+            p.vector_df(f"histogram_quantile(0.95, sum by (le, {g}) (increase({sel_gw('ttft')}[{w}])))", at, labels, COL_TTFT_P95),
             p.vector_df(f"histogram_quantile(0.95, sum by (le, {g}) (increase({sel_gw('lat')}[{w}])))", at, labels, "Latence p95 (s)"),
         ]
         df = parts[0]
@@ -301,7 +306,7 @@ def gateway_section(p: Prom, per: Period, anon: Anon) -> dict:
             df["user"] = df["user"].map(lambda v: anon(AUCUN if v in ("", None, "None") else v))
         if "api_key_alias" in df:
             df["api_key_alias"] = df["api_key_alias"].map(anon.keys)
-        tot = df["Tokens in"].fillna(0) + df["Tokens out"].fillna(0)
+        tot = df[COL_TOKENS_IN].fillna(0) + df[COL_TOKENS_OUT].fillna(0)
         df["Part tokens"] = tot / tot.sum() if tot.sum() else 0
         return df.sort_values("Requêtes", ascending=False)
 
@@ -340,8 +345,8 @@ def engine_section(p: Prom, per: Period) -> dict:
         v(f"avg_over_time((max by (provider) ({sel('kv')}) > bool 0.9)[{w}:1m])", "% temps KV>90%"),
         v(f"sum by (provider) (increase({sel('preempt')}[{w}]))", "Préemptions"),
         v(f"sum by (provider) (increase({sel('phit')}[{w}])) / clamp_min(sum by (provider) (increase({sel('pq')}[{w}])), 1)", "Hit prefix"),
-        v(hq("0.5", "vttft"), "TTFT p50 (s)"),
-        v(hq("0.95", "vttft"), "TTFT p95 (s)"),
+        v(hq("0.5", "vttft"), COL_TTFT_P50),
+        v(hq("0.95", "vttft"), COL_TTFT_P95),
         v(hq("0.95", "itl"), "ITL p95 (s)"),
         v(hq("0.95", "queue"), "File p95 (s)"),
         v(hq("0.95", "e2e"), "E2E p95 (s)"),
@@ -365,8 +370,8 @@ def engine_section(p: Prom, per: Period) -> dict:
     cparts = [
         p.vector_df(f"sum by (target) (increase({c_req}[{w}]))", at, cl, "Sondes"),
         p.vector_df(f"sum by (target) (increase({c_err}[{w}]))", at, cl, "Échecs"),
-        p.vector_df(f"histogram_quantile(0.5, sum by (le, target) (increase({c_tt}[{w}])))", at, cl, "TTFT p50 (s)"),
-        p.vector_df(f"histogram_quantile(0.95, sum by (le, target) (increase({c_tt}[{w}])))", at, cl, "TTFT p95 (s)"),
+        p.vector_df(f"histogram_quantile(0.5, sum by (le, target) (increase({c_tt}[{w}])))", at, cl, COL_TTFT_P50),
+        p.vector_df(f"histogram_quantile(0.95, sum by (le, target) (increase({c_tt}[{w}])))", at, cl, COL_TTFT_P95),
         # part des tranches de 10 min où plus de 5 % des sondes ont attendu plus de 10 s
         p.vector_df(f"avg_over_time((sum by (target) (rate({c_le10}[10m])) / "
                     f"clamp_min(sum by (target) (rate({c_inf}[10m])), 1e-9) < bool 0.95)[{w}:5m])",
@@ -390,21 +395,31 @@ def engine_section(p: Prom, per: Period) -> dict:
 
 
 # --- collecte SpendLogs ---------------------------------------------------------------
-def spendlogs_section(per: Period, anon: Anon) -> dict | None:
+def _spendlogs_connect() -> tuple[object | None, dict | None]:
+    """Connexion à Postgres LiteLLM. Renvoie (connexion, erreur) ; (None, None) si non configuré."""
     host = os.environ.get("LITELLM_PG_HOST")
     if not host:
-        return None
+        return None, None
     try:
         import psycopg
     except ImportError:
-        return {"error": "psycopg non installé"}
+        return None, {"error": "psycopg non installé"}
     h, _, port = host.partition(":")
     try:
         conn = psycopg.connect(host=h, port=int(port or 5432), dbname=os.environ.get("LITELLM_PG_DB", "litellm"),
                                user=os.environ.get("LITELLM_PG_USER"), password=os.environ.get("LITELLM_PG_PASSWORD"),
                                sslmode=os.environ.get("LITELLM_PG_SSLMODE", "prefer"), connect_timeout=10)
     except Exception as e:  # noqa: BLE001
-        return {"error": f"connexion Postgres impossible : {e}"}
+        return None, {"error": f"connexion Postgres impossible : {e}"}
+    return conn, None
+
+
+def spendlogs_section(per: Period, anon: Anon) -> dict | None:
+    conn, err = _spendlogs_connect()
+    if err:
+        return err
+    if conn is None:
+        return None
 
     with conn:
         cols = {r[0] for r in conn.execute(
@@ -454,12 +469,12 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
         g = frame.groupby(keys, dropna=False)
         r = pd.DataFrame({
             "Requêtes": g.size(),
-            "Tokens in": g["prompt_tokens"].sum(),
-            "Tokens out": g["completion_tokens"].sum(),
+            COL_TOKENS_IN: g["prompt_tokens"].sum(),
+            COL_TOKENS_OUT: g["completion_tokens"].sum(),
             "Prompt médian": g["prompt_tokens"].median(),
             "Prompt p95": g["prompt_tokens"].quantile(0.95),
-            "TTFT p50 (s)": g["ttft"].median(),
-            "TTFT p95 (s)": g["ttft"].quantile(0.95),
+            COL_TTFT_P50: g["ttft"].median(),
+            COL_TTFT_P95: g["ttft"].quantile(0.95),
             "Temps/token p95 (s)": g["tpot"].quantile(0.95),
             "Durée p95 (s)": g["dur"].quantile(0.95),
         }).reset_index()
@@ -518,7 +533,7 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
             s = r["Stack"]
             g = lambda k: (None if pd.isna(r.get(k)) else r.get(k))  # noqa: E731
             wait, kvp, kv90, pre = g("% temps file"), g("KV p95"), g("% temps KV>90%"), g("Préemptions")
-            ttft, itl, hit = g("TTFT p95 (s)"), g("ITL p95 (s)"), g("Hit prefix")
+            ttft, itl, hit = g(COL_TTFT_P95), g("ITL p95 (s)"), g("Hit prefix")
             sat = False
             if wait is not None and wait > 0.05 and (kvp is None or kvp < 0.8):
                 sat = True
@@ -567,7 +582,7 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
 
     users = (sl or {}).get("by_user") if sl and "by_user" in sl else gw.get("by_user")
     if users is not None and not users.empty:
-        tot = users["Tokens in"].fillna(0) + users["Tokens out"].fillna(0)
+        tot = users[COL_TOKENS_IN].fillna(0) + users[COL_TOKENS_OUT].fillna(0)
         if tot.sum() > 0:
             share = tot.max() / tot.sum()
             who = users.iloc[int(tot.values.argmax())]
@@ -614,19 +629,8 @@ def write_csv(per: Period, name: str, df: pd.DataFrame | None):
     df.to_csv(d / f"{name}.csv", index=isinstance(df.index, pd.DatetimeIndex), encoding="utf-8-sig", sep=";", decimal=",")
 
 
-def build(per: Period) -> Path:
-    p = Prom(PROM_URL)
-    anon = Anon(ANONYMIZE)
-    anon.keys = Anon(ANONYMIZE, prefix="clé")  # les alias de clé contiennent souvent un nom
-    print(f"Période : {per.label}")
-    print("· gateway LiteLLM…")
-    gw = gateway_section(p, per, anon)
-    print("· moteurs vLLM…")
-    eng = engine_section(p, per)
-    print("· SpendLogs…")
-    sl = spendlogs_section(per, anon)
-    notes = diagnose(eng, gw, sl if sl and "error" not in sl else None)
-
+def _kpis(gw: dict, sl: dict | None) -> list[tuple[str, str]]:
+    """Lignes d'indicateurs affichées en tête du rapport."""
     k = gw["kpi"]
     kpis = [
         ("Requêtes", fmt_num(k["requests"])),
@@ -642,6 +646,36 @@ def build(per: Period) -> Path:
         c = sl["conc"]
         kpis.append(("Concurrence max (exacte)", f"{c['max']} ({c['peak_at']})"))
         kpis.append(("Concurrence p95 / min", fmt_num(c["p95_min"])))
+    return kpis
+
+
+def _sl_context(sl: dict | None) -> dict | None:
+    """Contexte SpendLogs transmis au template (erreur, absence ou tableaux rendus)."""
+    if sl is None:
+        return None
+    if "error" in sl:
+        return {"error": sl["error"]}
+    return {
+        "n": fmt_num(sl["n"]), "team": df_html(sl["by_team"]), "user": df_html(sl["by_user"]),
+        "base": df_html(sl["by_base"]), "chart_conc": sl["chart_conc"],
+        "by_size": df_html(sl["by_size"]), "contention": df_html(sl["contention"]), "verdict": sl["verdict"],
+        "key_conc": df_html(sl["key_conc"]), "top": df_html(sl["top"])}
+
+
+def build(per: Period) -> Path:
+    p = Prom(PROM_URL)
+    anon = Anon(ANONYMIZE)
+    anon.keys = Anon(ANONYMIZE, prefix="clé")  # les alias de clé contiennent souvent un nom
+    print(f"Période : {per.label}")
+    print("· gateway LiteLLM…")
+    gw = gateway_section(p, per, anon)
+    print("· moteurs vLLM…")
+    eng = engine_section(p, per)
+    print("· SpendLogs…")
+    sl = spendlogs_section(per, anon)
+    notes = diagnose(eng, gw, sl if sl and "error" not in sl else None)
+
+    kpis = _kpis(gw, sl)
 
     env = Environment(loader=FileSystemLoader(Path(__file__).parent), autoescape=select_autoescape(["html"]))
     html = env.get_template("template.html.j2").render(
@@ -652,11 +686,7 @@ def build(per: Period) -> Path:
         eng={"table": df_html(eng["table"]), "chart_conc": eng["chart_conc"], "chart_kv": eng["chart_kv"],
              "canary": df_html(eng["canary"]) if not eng["canary"].empty else None, "chart_canary": eng["chart_canary"]},
         small=SMALL_PROMPT, large=LARGE_PROMPT,
-        sl=None if sl is None else ({"error": sl["error"]} if "error" in sl else {
-            "n": fmt_num(sl["n"]), "team": df_html(sl["by_team"]), "user": df_html(sl["by_user"]),
-            "base": df_html(sl["by_base"]), "chart_conc": sl["chart_conc"],
-            "by_size": df_html(sl["by_size"]), "contention": df_html(sl["contention"]), "verdict": sl["verdict"],
-            "key_conc": df_html(sl["key_conc"]), "top": df_html(sl["top"])}),
+        sl=_sl_context(sl),
     )
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"rapport-llm_{per.slug}.html"
@@ -681,22 +711,40 @@ def build(per: Period) -> Path:
 
 
 # --- check ----------------------------------------------------------------------------
-def check() -> int:
-    p = Prom(PROM_URL)
+def _check_up(p: Prom) -> bool:
+    """Affiche l'état des cibles Prometheus et renvoie True si toutes sont UP."""
     ok = True
-    print(f"Prometheus : {PROM_URL}")
     for r in p.instant('up{job=~"litellm|vllm|canary"}', datetime.now(TZ)):
         m = r["metric"]
         state = "UP " if r["value"][1] == "1" else "DOWN"
         ok &= state == "UP "
         print(f"  [{state}] {m.get('job'):8} {m.get('instance'):24} {m.get('provider', '')}")
+    return ok
+
+
+def _check_metrics(p: Prom) -> bool:
+    """Affiche la présence des métriques attendues et renvoie True si rien d'obligatoire ne manque."""
     names = p.names()
+    ok = True
     print("\nMétriques attendues :")
     for key, rx in M.items():
         found = [nm for nm in names if re.fullmatch(rx, nm)]
-        mark = "✔" if found else ("–" if key in OPTIONAL else "✘")
+        if found:
+            mark = "✔"
+        elif key in OPTIONAL:
+            mark = "–"
+        else:
+            mark = "✘"
         ok &= bool(found) or key in OPTIONAL
         print(f"  {mark} {key:8} {', '.join(found) or '(absente : ' + rx + ')'}")
+    return ok
+
+
+def check() -> int:
+    p = Prom(PROM_URL)
+    print(f"Prometheus : {PROM_URL}")
+    ok = _check_up(p)
+    ok &= _check_metrics(p)
     print(f"\nExclu des KPI (hors usage réel) : teams={EXCLUDE_TEAMS or 'aucune'} "
           f"alias de clés={EXCLUDE_KEY_ALIASES or 'aucun'}")
     sample = p.instant(f"count by (team_alias, user, api_key_alias) ({sel('req')})", datetime.now(TZ))

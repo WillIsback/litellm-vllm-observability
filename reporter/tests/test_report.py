@@ -7,14 +7,17 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import report as rp  # noqa: E402
 
 
-def setup_function():
-    rp.EXCLUDE_TEAMS = ["litellm-internal-health-check"]
-    rp.EXCLUDE_KEY_ALIASES = ["canary"]
+@pytest.fixture(autouse=True)
+def _default_exclusions(monkeypatch):
+    """Exclusions de monitoring par défaut, restaurées après chaque test."""
+    monkeypatch.setattr(rp, "EXCLUDE_TEAMS", ["litellm-internal-health-check"])
+    monkeypatch.setattr(rp, "EXCLUDE_KEY_ALIASES", ["canary"])
 
 
 # --- sel_gw : exclusion du monitoring des KPI gateway --------------------------
@@ -24,14 +27,15 @@ def test_sel_gw_exclut_team_sante_et_cle_sonde():
     assert 'api_key_alias!~"canary"' in s
 
 
-def test_sel_gw_sans_exclusion_egale_sel():
-    rp.EXCLUDE_TEAMS, rp.EXCLUDE_KEY_ALIASES = [], []
+def test_sel_gw_sans_exclusion_egale_sel(monkeypatch):
+    monkeypatch.setattr(rp, "EXCLUDE_TEAMS", [])
+    monkeypatch.setattr(rp, "EXCLUDE_KEY_ALIASES", [])
     assert rp.sel_gw("req") == rp.sel("req")
     assert rp.sel_gw("req", 'user!=""') == rp.sel("req", 'user!=""')
 
 
-def test_sel_gw_echappe_regex_puis_promql():
-    rp.EXCLUDE_KEY_ALIASES = ["canary.v2"]  # le point est un méta-caractère
+def test_sel_gw_echappe_regex_puis_promql(monkeypatch):
+    monkeypatch.setattr(rp, "EXCLUDE_KEY_ALIASES", ["canary.v2"])  # le point est un méta-caractère
     # échappé pour la regex (\\.) puis barre obliques doublée pour la chaîne PromQL (\\\\.)
     assert 'api_key_alias!~"canary\\\\.v2"' in rp.sel_gw("req")
 
@@ -58,7 +62,8 @@ def test_anon_pseudonymise_les_vrais_utilisateurs():
 
 def test_anon_cle_prefixe_et_independant():
     users, keys = rp.Anon(True), rp.Anon(True, prefix="clé")
-    assert users("alice") == "user-01" and keys("canary") == "clé-01"
+    assert users("alice") == "user-01"
+    assert keys("canary") == "clé-01"
 
 
 # --- diagnostic ITL : la règle « batch trop gros » exige une concurrence réelle --
@@ -75,14 +80,18 @@ def _itl_note(itl, pic):
 
 def test_itl_eleve_mais_concurrence_faible_est_informatif():
     n = _itl_note(0.14, 2)
-    assert len(n) == 1 and n[0]["lvl"] == "info"
-    assert "concurrence reste faible" in n[0]["txt"] and "pic 2" in n[0]["txt"]
+    assert len(n) == 1
+    assert n[0]["lvl"] == "info"
+    assert "concurrence reste faible" in n[0]["txt"]
+    assert "pic 2" in n[0]["txt"]
 
 
 def test_itl_eleve_avec_concurrence_avertit():
     n = _itl_note(0.14, 5)
-    assert len(n) == 1 and n[0]["lvl"] == "warn"
-    assert "batch de décodage trop gros" in n[0]["txt"] and "5 requête(s) en cours" in n[0]["txt"]
+    assert len(n) == 1
+    assert n[0]["lvl"] == "warn"
+    assert "batch de décodage trop gros" in n[0]["txt"]
+    assert "5 requête(s) en cours" in n[0]["txt"]
 
 
 def test_itl_sous_slo_silencieux():
@@ -91,5 +100,6 @@ def test_itl_sous_slo_silencieux():
 
 def test_itl_concurrence_inconnue_reste_prudent():
     n = _itl_note(0.14, None)
-    assert len(n) == 1 and n[0]["lvl"] == "warn"
+    assert len(n) == 1
+    assert n[0]["lvl"] == "warn"
     assert "inconnue" in n[0]["txt"]

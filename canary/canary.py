@@ -76,34 +76,47 @@ def observe(target: str, status: str, ttft: float | None = None, tps: float | No
                         "ok": 1.0 if status == "ok" else 0.0, "ts": time.time()}
 
 
+def _body(t: dict) -> dict:
+    return {"model": resolve_model(t), "max_tokens": 48, "temperature": 0, "stream": True,
+            "stream_options": {"include_usage": True},
+            # préfixe aléatoire : pas de cache de préfixe, on mesure toujours le même travail
+            "messages": [{"role": "user", "content": f"[{uuid.uuid4().hex[:8]}] {PROMPT}"}],
+            "chat_template_kwargs": {"enable_thinking": False}}
+
+
+def _consume_stream(r, t0: float) -> tuple[float | None, int]:
+    """Lit le flux SSE et renvoie (TTFT, nombre de tokens de sortie)."""
+    ttft, tokens = None, 0
+    for raw in r:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        ev = json.loads(line[6:])
+        delta = (ev.get("choices") or [{}])[0].get("delta") or {}
+        if ttft is None and (delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning")):
+            ttft = time.time() - t0
+        if ev.get("usage"):
+            tokens = ev["usage"].get("completion_tokens", 0)
+    return ttft, tokens
+
+
+def _record(name: str, t0: float, ttft: float | None, tokens: int) -> None:
+    if ttft is None:
+        observe(name, "no_token")
+        return
+    dt = time.time() - t0
+    observe(name, "ok", ttft, tokens / (dt - ttft) if dt > ttft and tokens else None)
+
+
 def probe(t: dict):
     name = t["name"]
     with lock:
         inflight[name] = inflight.get(name, 0) + 1
     t0 = time.time()
     try:
-        body = {"model": resolve_model(t), "max_tokens": 48, "temperature": 0, "stream": True,
-                "stream_options": {"include_usage": True},
-                # préfixe aléatoire : pas de cache de préfixe, on mesure toujours le même travail
-                "messages": [{"role": "user", "content": f"[{uuid.uuid4().hex[:8]}] {PROMPT}"}],
-                "chat_template_kwargs": {"enable_thinking": False}}
-        ttft, tokens = None, 0
-        with http(t["url"] + "/chat/completions", t["key"], body, TIMEOUT) as r:
-            for raw in r:
-                line = raw.decode("utf-8", "replace").strip()
-                if not line.startswith("data: ") or line == "data: [DONE]":
-                    continue
-                ev = json.loads(line[6:])
-                delta = (ev.get("choices") or [{}])[0].get("delta") or {}
-                if ttft is None and (delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning")):
-                    ttft = time.time() - t0
-                if ev.get("usage"):
-                    tokens = ev["usage"].get("completion_tokens", 0)
-        dt = time.time() - t0
-        if ttft is None:
-            observe(name, "no_token")
-        else:
-            observe(name, "ok", ttft, tokens / (dt - ttft) if dt > ttft and tokens else None)
+        with http(t["url"] + "/chat/completions", t["key"], _body(t), TIMEOUT) as r:
+            ttft, tokens = _consume_stream(r, t0)
+        _record(name, t0, ttft, tokens)
     except urllib.error.HTTPError as e:
         observe(name, f"http_{e.code}")
     except Exception as e:  # noqa: BLE001

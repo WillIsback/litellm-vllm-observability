@@ -52,7 +52,8 @@ def test_verdict_confirme_quand_ttft_explose_avec_gros_prompt():
     rows += [req(5 + i * 10, 60, 65, 300, "c") for i in range(40)]      # pendant la lecture
     table, v = hyp.contention(frame(rows), SMALL, LARGE)
     assert table["Requêtes"].tolist() == [40, 40]
-    assert v["lvl"] == "warn" and "CONFIRMÉE" in v["txt"]
+    assert v["lvl"] == "warn"
+    assert "CONFIRMÉE" in v["txt"]
     assert v["ratio_p50"] > 100
 
 
@@ -61,13 +62,15 @@ def test_verdict_non_confirme_quand_pas_d_effet():
     rows += [req(1000 + i * 20, 0.5, 3, 300, "c") for i in range(40)]
     rows += [req(5 + i * 10, 0.55, 3, 300, "c") for i in range(40)]
     _, v = hyp.contention(frame(rows), SMALL, LARGE)
-    assert v["lvl"] == "ok" and "NON CONFIRMÉE" in v["txt"]
+    assert v["lvl"] == "ok"
+    assert "NON CONFIRMÉE" in v["txt"]
 
 
 def test_verdict_prudent_si_pas_assez_d_echantillons():
     rows = [req(0, 600, 610, 800_000, "lourd"), req(5, 60, 65, 300, "c"), req(1000, 0.5, 3, 300, "c")]
     _, v = hyp.contention(frame(rows), SMALL, LARGE)
-    assert v["lvl"] == "info" and v["ratio_p50"] is None
+    assert v["lvl"] == "info"
+    assert v["ratio_p50"] is None
 
 
 def test_concurrence_par_cle_et_minutes_au_dessus_des_limites():
@@ -76,14 +79,17 @@ def test_concurrence_par_cle_et_minutes_au_dessus_des_limites():
     rows += [req(i * 100, 1, 30, 1000, "rh") for i in range(3)]
     k = hyp.key_concurrency(frame(rows)).set_index("Utilisateur")
     assert k.loc["dev", "Pic simultané"] == 4
-    assert k.loc["dev", "Minutes > 3"] >= 3 and k.loc["dev", "Minutes > 4"] == 0
-    assert k.loc["rh", "Pic simultané"] == 1 and k.loc["rh", "Minutes > 2"] == 0
+    assert k.loc["dev", "Minutes > 3"] >= 3
+    assert k.loc["dev", "Minutes > 4"] == 0
+    assert k.loc["rh", "Pic simultané"] == 1
+    assert k.loc["rh", "Minutes > 2"] == 0
 
 
 def test_ttft_par_tranche_et_part_des_tokens():
     rows = [req(0, 0.4, 2, 1000, "a"), req(5, 0.6, 2, 3000, "b"), req(10, 200, 210, 296_000, "c")]
     t = hyp.ttft_by_bucket(frame(rows), SMALL, LARGE).set_index("Taille du prompt")
-    assert t.loc["< 8k", "Requêtes"] == 2 and t.loc["≥ 100k", "Requêtes"] == 1
+    assert t.loc["< 8k", "Requêtes"] == 2
+    assert t.loc["≥ 100k", "Requêtes"] == 1
     assert abs(t.loc["≥ 100k", "Part tokens in"] - 0.98666) < 1e-3
     assert t.loc["8k – 32k", "Requêtes"] == 0
 
