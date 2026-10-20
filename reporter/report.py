@@ -45,6 +45,14 @@ ANONYMIZE = os.environ.get("ANONYMIZE_USERS", "true").lower() in ("1", "true", "
 # Seuils de l'analyse « gros prompts vs petites requêtes » (tokens d'entrée)
 SMALL_PROMPT = int(os.environ.get("SMALL_PROMPT_TOKENS", "8000"))
 LARGE_PROMPT = int(os.environ.get("LARGE_PROMPT_TOKENS", "100000"))
+# Équipes et alias de clés sans usage réel, exclus des KPI et des totaux :
+# le health-check interne de LiteLLM et la clé de la sonde témoin gonflent les compteurs.
+EXCLUDE_TEAMS = [t.strip() for t in os.environ.get("EXCLUDE_TEAMS", "litellm-internal-health-check").split(",") if t.strip()]
+EXCLUDE_KEY_ALIASES = [k.strip() for k in os.environ.get("EXCLUDE_KEY_ALIASES", "canary").split(",") if k.strip()]
+# Concurrence (requêtes en cours) au-delà de laquelle un ITL élevé est imputé au batch de décodage ;
+# en deçà, c'est la vitesse de décodage du modèle (bande passante mémoire), pas une saturation.
+CONC_ITL_MIN = 3
+AUCUN = "(aucun)"  # utilisateur sans compte rattaché (Open WebUI, sonde…) : jamais pseudonymisé ni compté comme actif
 
 # --- noms de métriques (regex tolérantes aux changements de version) ---------
 M = {
@@ -79,6 +87,20 @@ OPTIONAL = {"canary_ttft", "canary_req"}  # absentes si la sonde n'est pas confi
 
 def sel(key: str, extra: str = "") -> str:
     return '{__name__=~"%s"%s}' % (M[key], ("," + extra) if extra else "")
+
+
+def sel_gw(key: str, extra: str = "") -> str:
+    """sel() des métriques gateway, hors équipes/clés sans usage réel (KPI et totaux).
+
+    Les noms sont des littéraux : les caractères spéciaux d'une regex sont échappés,
+    puis les barres obliques doublées pour survivre à l'analyse de la chaîne PromQL.
+    """
+    parts = [extra] if extra else []
+    if EXCLUDE_TEAMS:
+        parts.append('team_alias!~"%s"' % "|".join(re.escape(t).replace("\\", "\\\\") for t in EXCLUDE_TEAMS))
+    if EXCLUDE_KEY_ALIASES:
+        parts.append('api_key_alias!~"%s"' % "|".join(re.escape(k).replace("\\", "\\\\") for k in EXCLUDE_KEY_ALIASES))
+    return sel(key, ",".join(parts))
 
 
 # --- client Prometheus --------------------------------------------------------
@@ -245,17 +267,18 @@ def chart_heatmap(df_hourly: pd.DataFrame, title: str) -> str | None:
 def gateway_section(p: Prom, per: Period, anon: Anon) -> dict:
     at, w = per.end, per.win
     out: dict = {}
-    req, fail = sel("req"), sel("fail")
+    req, fail = sel_gw("req"), sel_gw("fail")
+    req_user = sel_gw("req", 'user!="",user!="None"')  # compteur « Utilisateurs actifs » : hors comptes rattachés à rien
     out["kpi"] = {
         "requests": p.scalar(f"sum(increase({req}[{w}]))", at),
         "failures": p.scalar(f"sum(increase({fail}[{w}]))", at),
-        "tin": p.scalar(f"sum(increase({sel('tin')}[{w}]))", at),
-        "tout": p.scalar(f"sum(increase({sel('tout')}[{w}]))", at),
-        "users": p.scalar(f"count(sum by (user) (increase({req}[{w}])) > 0)", at),
-        "ttft_p50": p.scalar(f"histogram_quantile(0.5, sum by (le) (increase({sel('ttft')}[{w}])))", at),
-        "ttft_p95": p.scalar(f"histogram_quantile(0.95, sum by (le) (increase({sel('ttft')}[{w}])))", at),
-        "lat_p95": p.scalar(f"histogram_quantile(0.95, sum by (le) (increase({sel('lat')}[{w}])))", at),
-        "ovh_p95": p.scalar(f"histogram_quantile(0.95, sum by (le) (increase({sel('ovh')}[{w}])))", at),
+        "tin": p.scalar(f"sum(increase({sel_gw('tin')}[{w}]))", at),
+        "tout": p.scalar(f"sum(increase({sel_gw('tout')}[{w}]))", at),
+        "users": p.scalar(f"count(sum by (user) (increase({req_user}[{w}])) > 0)", at),
+        "ttft_p50": p.scalar(f"histogram_quantile(0.5, sum by (le) (increase({sel_gw('ttft')}[{w}])))", at),
+        "ttft_p95": p.scalar(f"histogram_quantile(0.95, sum by (le) (increase({sel_gw('ttft')}[{w}])))", at),
+        "lat_p95": p.scalar(f"histogram_quantile(0.95, sum by (le) (increase({sel_gw('lat')}[{w}])))", at),
+        "ovh_p95": p.scalar(f"histogram_quantile(0.95, sum by (le) (increase({sel_gw('ovh')}[{w}])))", at),
     }
 
     def by(labels: list[str]) -> pd.DataFrame:
@@ -263,18 +286,19 @@ def gateway_section(p: Prom, per: Period, anon: Anon) -> dict:
         parts = [
             p.vector_df(f"sum by ({g}) (increase({req}[{w}]))", at, labels, "Requêtes"),
             p.vector_df(f"sum by ({g}) (increase({fail}[{w}]))", at, labels, "Échecs"),
-            p.vector_df(f"sum by ({g}) (increase({sel('tin')}[{w}]))", at, labels, "Tokens in"),
-            p.vector_df(f"sum by ({g}) (increase({sel('tout')}[{w}]))", at, labels, "Tokens out"),
-            p.vector_df(f"histogram_quantile(0.95, sum by (le, {g}) (increase({sel('ttft')}[{w}])))", at, labels, "TTFT p95 (s)"),
-            p.vector_df(f"histogram_quantile(0.95, sum by (le, {g}) (increase({sel('lat')}[{w}])))", at, labels, "Latence p95 (s)"),
+            p.vector_df(f"sum by ({g}) (increase({sel_gw('tin')}[{w}]))", at, labels, "Tokens in"),
+            p.vector_df(f"sum by ({g}) (increase({sel_gw('tout')}[{w}]))", at, labels, "Tokens out"),
+            p.vector_df(f"histogram_quantile(0.95, sum by (le, {g}) (increase({sel_gw('ttft')}[{w}])))", at, labels, "TTFT p95 (s)"),
+            p.vector_df(f"histogram_quantile(0.95, sum by (le, {g}) (increase({sel_gw('lat')}[{w}])))", at, labels, "Latence p95 (s)"),
         ]
         df = parts[0]
         for part in parts[1:]:
             df = df.merge(part, on=labels, how="outer")
         if df.empty:
             return df
+        df = df[df["Requêtes"].fillna(0) > 0]  # séries présentes dans Prometheus mais sans requête sur la période
         if "user" in df:
-            df["user"] = df["user"].map(anon)
+            df["user"] = df["user"].map(lambda v: anon(AUCUN if v in ("", None, "None") else v))
         if "api_key_alias" in df:
             df["api_key_alias"] = df["api_key_alias"].map(anon.keys)
         tot = df["Tokens in"].fillna(0) + df["Tokens out"].fillna(0)
@@ -391,7 +415,7 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
         SELECT s."startTime" AS start, s."endTime" AS end_, s."completionStartTime" AS first_tok,
                s.prompt_tokens, s.completion_tokens, s.api_base, s.model_group, s.api_key AS key_id,
                COALESCE(t.team_alias, {team_id}, '(sans team)') AS team,
-               COALESCE(u.user_email, NULLIF(s."user", ''), '(inconnu)') AS user_,
+               COALESCE(u.user_email, NULLIF(NULLIF(s."user", ''), 'None'), '{AUCUN}') AS user_,
                COALESCE(k.key_alias, '(sans alias)') AS key_alias,
                {status} AS status
         FROM "LiteLLM_SpendLogs" s
@@ -408,6 +432,13 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
     if df.empty:
         return {"error": "aucune ligne dans LiteLLM_SpendLogs sur la période"}
 
+    # monitoring (équipe santé interne LiteLLM, clé de la sonde) : exclu des totaux d'usage,
+    # mais conservé pour l'analyse causale — la sonde est une « petite requête » idéale pour le test
+    monitoring = pd.Series(False, index=df.index)
+    for col, excl_ in (("team", EXCLUDE_TEAMS), ("key_alias", EXCLUDE_KEY_ALIASES)):
+        if excl_:
+            monitoring |= df[col].isin(excl_)
+
     for c in ("start", "end_", "first_tok"):
         df[c] = pd.to_datetime(df[c], utc=True).dt.tz_convert(TZ)
     df["user_"] = df["user_"].map(anon)
@@ -417,9 +448,10 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
     ttft = (df["first_tok"] - df["start"]).dt.total_seconds()
     df["ttft"] = ttft.where((df["first_tok"] > df["start"]) & (df["first_tok"] < df["end_"]))
     df["tpot"] = ((df["end_"] - df["first_tok"]).dt.total_seconds() / df["completion_tokens"].clip(lower=1)).where(df["ttft"].notna())
+    usage = df[~monitoring]  # périmètre « usage réel » pour les totaux et la concurrence
 
-    def agg(keys):
-        g = df.groupby(keys, dropna=False)
+    def agg(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+        g = frame.groupby(keys, dropna=False)
         r = pd.DataFrame({
             "Requêtes": g.size(),
             "Tokens in": g["prompt_tokens"].sum(),
@@ -433,14 +465,15 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
         }).reset_index()
         return r.sort_values("Requêtes", ascending=False)
 
-    by_team = agg(["team"]).rename(columns={"team": "Team"})
-    by_team.insert(2, "Utilisateurs", df.groupby("team")["user_"].nunique().reindex(by_team["Team"]).values)
-    by_user = agg(["team", "user_", "key_alias"]).rename(columns={"team": "Team", "user_": "Utilisateur", "key_alias": "Clé"})
-    by_base = agg(["api_base"]).rename(columns={"api_base": "Stack (api_base)"})
+    by_team = agg(usage, ["team"]).rename(columns={"team": "Team"})
+    by_team.insert(2, "Utilisateurs",
+                   usage[usage["user_"] != AUCUN].groupby("team")["user_"].nunique().reindex(by_team["Team"]).values)
+    by_user = agg(usage, ["team", "user_", "key_alias"]).rename(columns={"team": "Team", "user_": "Utilisateur", "key_alias": "Clé"})
+    by_base = agg(usage, ["api_base"]).rename(columns={"api_base": "Stack (api_base)"})
     by_base.insert(2, "Part", by_base["Requêtes"] / by_base["Requêtes"].sum())
 
-    # concurrence réelle reconstituée à partir des intervalles [start, end]
-    ev = pd.concat([pd.DataFrame({"t": df["start"], "d": 1}), pd.DataFrame({"t": df["end_"], "d": -1})])
+    # concurrence réelle reconstituée à partir des intervalles [start, end] (hors monitoring)
+    ev = pd.concat([pd.DataFrame({"t": usage["start"], "d": 1}), pd.DataFrame({"t": usage["end_"], "d": -1})])
     ev = ev.sort_values(["t", "d"]).reset_index(drop=True)
     ev["c"] = ev["d"].cumsum()
     conc_5m = ev.set_index("t")["c"].resample("5min").max().ffill()
@@ -460,15 +493,15 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
     small_ttft = df.loc[df["prompt_tokens"] < SMALL_PROMPT, "ttft"]
 
     out = {
-        "n": len(df), "by_team": by_team, "by_user": by_user, "by_base": by_base, "conc": conc,
+        "n": len(usage), "by_team": by_team, "by_user": by_user, "by_base": by_base, "conc": conc,
         "by_size": hyp.ttft_by_bucket(df, SMALL_PROMPT, LARGE_PROMPT),
         "contention": cont_table, "verdict": cont_verdict,
         "small_ttft_p95": small_ttft.quantile(0.95) if small_ttft.notna().any() else None,
-        "key_conc": hyp.key_concurrency(df),
+        "key_conc": hyp.key_concurrency(usage),
         "top": hyp.top_prompts(df),
         "chart_conc": chart_lines(daily_conc, "Concurrence max par jour (gateway, exacte)", "requêtes simultanées", kind="bar"),
-        "ttft_global_p95": df["ttft"].quantile(0.95),
-        "fail_rate": (df["status"].eq("failure").mean() if df["status"].notna().any() else None),
+        "ttft_global_p95": usage["ttft"].quantile(0.95),
+        "fail_rate": (usage["status"].eq("failure").mean() if usage["status"].notna().any() else None),
     }
     return out
 
@@ -508,10 +541,21 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
                     "Pistes : vérifier le prefix caching et l'affinité de routage, --long-prefill-token-threshold, "
                     "limiter les très gros prompts."})
             if itl is not None and itl > SLO_ITL:
-                sat = True
-                notes.append({"lvl": "warn", "stack": s, "txt":
-                    f"ITL p95 {itl*1000:.0f} ms > SLO {SLO_ITL*1000:.0f} ms : batch de décodage trop gros pour la bande passante mémoire. "
-                    "Piste : baisser --max-num-seqs pour protéger la latence, ou plafonner la concurrence."})
+                pic = g("Pic en cours")
+                if pic is not None and pic < CONC_ITL_MIN:
+                    # jamais plus de quelques requêtes en cours : ce n'est pas un batch trop gros,
+                    # c'est la vitesse de décodage du modèle (bande passante mémoire), cf. GB10
+                    notes.append({"lvl": "info", "stack": s, "txt":
+                        f"ITL p95 {itl*1000:.0f} ms > SLO {SLO_ITL*1000:.0f} ms, mais la concurrence reste faible "
+                        f"(pic {pic:.0f} requête(s) en cours) : plafond de décodage du modèle, pas un batch trop gros. "
+                        "Relever SLO_ITL_P95 dans .env (ex. 0.2) pour refléter ce modèle sur GB10."})
+                else:
+                    sat = True
+                    conc = f"avec {pic:.0f} requête(s) en cours" if pic is not None else "avec une concurrence élevée ou inconnue"
+                    notes.append({"lvl": "warn", "stack": s, "txt":
+                        f"ITL p95 {itl*1000:.0f} ms > SLO {SLO_ITL*1000:.0f} ms ({conc}) : "
+                        "batch de décodage trop gros pour la bande passante mémoire. "
+                        "Piste : baisser --max-num-seqs pour protéger la latence, ou plafonner la concurrence."})
             if hit is not None and hit < 0.3:
                 notes.append({"lvl": "info", "stack": s, "txt":
                     f"Hit rate du prefix cache faible ({hit:.0%}) : vérifier l'affinité de routage LiteLLM et la stabilité des prompts système."})
@@ -653,6 +697,8 @@ def check() -> int:
         mark = "✔" if found else ("–" if key in OPTIONAL else "✘")
         ok &= bool(found) or key in OPTIONAL
         print(f"  {mark} {key:8} {', '.join(found) or '(absente : ' + rx + ')'}")
+    print(f"\nExclu des KPI (hors usage réel) : teams={EXCLUDE_TEAMS or 'aucune'} "
+          f"alias de clés={EXCLUDE_KEY_ALIASES or 'aucun'}")
     sample = p.instant(f"count by (team_alias, user, api_key_alias) ({sel('req')})", datetime.now(TZ))
     print(f"\nCombinaisons team/user/clé vues par Prometheus : {len(sample)}")
     for r in sample[:10]:

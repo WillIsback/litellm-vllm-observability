@@ -43,6 +43,13 @@ chaque master vLLM ; ajouter la gateway avec une **clé LiteLLM dédiée « cana
 complet (`gateway=http://<litellm>:4000/v1|<model_name>`, clé dans `CANARY_KEY_GATEWAY`). Ses requêtes
 apparaissent dans SpendLogs sous cette clé : ce sont des « petites requêtes » idéales pour le test.
 
+**Monitoring exclu des KPI** : les requêtes de santé interne de LiteLLM et celles de la sonde ne sont pas de
+l'usage. Le rapport les exclut des totaux, des « utilisateurs actifs » et de la concurrence — mais garde la
+sonde dans l'analyse causale. Par défaut `EXCLUDE_TEAMS=litellm-internal-health-check` et
+`EXCLUDE_KEY_ALIASES=canary` dans `.env` (listes séparées par des virgules ; adapter l'alias de clé si la
+sonde en porte un autre). De même, une requête sans utilisateur rattaché (Open WebUI, santé, sonde) est
+affichée « (aucun) » et n'est jamais comptée comme un utilisateur actif.
+
 **Affinité de routage** : avec `simple-shuffle`, une session d'agent alterne entre stacks et perd le cache de
 préfixe une fois sur deux (chaque tour relit tout le contexte). Comparer le panneau « calculés vs cache » avant
 de conclure que les utilisateurs sont seuls en cause.
@@ -54,6 +61,9 @@ contienne `cached_tokens` (utile pour savoir quelle part des « 10 M tokens » d
 de 5 min est invisible puis fait un pic) ; le KV cache peut rester < 20 % alors que les utilisateurs attendent
 plusieurs minutes (le goulot est le temps de lecture, pas la mémoire) ; avec dcgm-exporter,
 `DCGM_FI_DEV_GPU_UTIL` reste ~96 % dès que le modèle est chargé : suivre `DCGM_FI_DEV_POWER_USAGE`.
+Côté latence, un ITL p95 ~140 ms est le **plafond de décodage** de ces modèles (bande passante mémoire) et non
+un symptôme de saturation tant que la concurrence reste faible : le diagnostic le sait (il ne parle de
+« batch trop gros » qu'au-delà de quelques requêtes en cours) et `SLO_ITL_P95=0.2` dans `.env` en tient compte.
 
 **Licence LiteLLM** : selon la version, le callback `prometheus` peut nécessiter une licence Enterprise. Si le
 dashboard « usage LiteLLM » reste vide, SpendLogs et la sonde suffisent pour le test de l'hypothèse.
@@ -88,7 +98,7 @@ GRANT SELECT (token, key_alias, team_id, user_id) ON "LiteLLM_VerificationToken"
 
 | Fichier | Rôle |
 |---|---|
-| `.env` | mots de passe Grafana/Postgres, `BIND_ADDR`, ports, rétention Prometheus (120 j), SLO (`SLO_TTFT_P95`, `SLO_ITL_P95`), seuils petit/gros prompt, sonde (`CANARY_*`), `ANONYMIZE_USERS`, `HOST_UID/GID` |
+| `.env` | mots de passe Grafana/Postgres, `BIND_ADDR`, ports, rétention Prometheus (120 j), SLO (`SLO_TTFT_P95`, `SLO_ITL_P95`), exclusions de monitoring (`EXCLUDE_TEAMS`, `EXCLUDE_KEY_ALIASES`), seuils petit/gros prompt, sonde (`CANARY_*`), `ANONYMIZE_USERS`, `HOST_UID/GID` |
 | `prometheus/targets/litellm.yml` | adresse du proxy LiteLLM |
 | `prometheus/targets/vllm.yml` | master de chaque stack ; `api_base` doit être **identique** à celui du `config.yaml` LiteLLM |
 
