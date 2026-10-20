@@ -337,7 +337,7 @@ def engine_section(p: Prom, per: Period) -> dict:
     canary = pd.DataFrame()
     cl = ["target"]
     c_req, c_err, c_tt = sel("canary_req"), sel("canary_req", 'status!="ok"'), sel("canary_ttft")
-    c_le10, c_inf = sel("canary_ttft", 'le="10"'), sel("canary_ttft", 'le="+Inf"')
+    c_le10, c_inf = sel("canary_ttft", r'le=~"10(\\.0)?"'), sel("canary_ttft", 'le="+Inf"')
     cparts = [
         p.vector_df(f"sum by (target) (increase({c_req}[{w}]))", at, cl, "Sondes"),
         p.vector_df(f"sum by (target) (increase({c_err}[{w}]))", at, cl, "Échecs"),

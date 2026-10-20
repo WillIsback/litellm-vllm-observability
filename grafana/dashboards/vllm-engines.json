@@ -1192,7 +1192,7 @@
             "type": "prometheus",
             "uid": "prom-llm"
           },
-          "expr": "1 - sum by (target) (increase(canary_ttft_seconds_bucket{le=\"10\"}[$__range])) / clamp_min(sum by (target) (increase(canary_ttft_seconds_bucket{le=\"+Inf\"}[$__range])), 1)",
+          "expr": "1 - sum by (target) (increase(canary_ttft_seconds_bucket{le=~\"10(\\\\.0)?\"}[$__range])) / clamp_min(sum by (target) (increase(canary_ttft_seconds_bucket{le=\"+Inf\"}[$__range])), 1)",
           "legendFormat": "{{target}}",
           "refId": "A",
           "range": false,
