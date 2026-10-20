@@ -8,6 +8,14 @@ from __future__ import annotations
 
 import pandas as pd
 
+# Noms de colonnes réutilisés dans plusieurs tableaux (évite les littéraux dupliqués).
+REQUETES = "Requêtes"
+TTFT_P50 = "TTFT p50 (s)"
+TTFT_P95 = "TTFT p95 (s)"
+DUREE_P95 = "Durée p95 (s)"
+PIC_SIMULTANE = "Pic simultané"
+
+
 def bucket_labels(small: int, large: int) -> list[str]:
     k = lambda n: f"{n // 1000}k"  # noqa: E731
     return [f"< {k(small)}", f"{k(small)} – 32k", f"32k – {k(large)}", f"≥ {k(large)}"]
@@ -24,12 +32,12 @@ def ttft_by_bucket(df: pd.DataFrame, small: int, large: int) -> pd.DataFrame:
     g = d.groupby("tranche", observed=False)
     tot = d["prompt_tokens"].sum()
     return pd.DataFrame({
-        "Requêtes": g.size(),
+        REQUETES: g.size(),
         "Utilisateurs": g["user_"].nunique(),
         "Part tokens in": g["prompt_tokens"].sum() / tot if tot else 0,
-        "TTFT p50 (s)": g["ttft"].median(),
-        "TTFT p95 (s)": g["ttft"].quantile(0.95),
-        "Durée p95 (s)": g["dur"].quantile(0.95),
+        TTFT_P50: g["ttft"].median(),
+        TTFT_P95: g["ttft"].quantile(0.95),
+        DUREE_P95: g["dur"].quantile(0.95),
     }).reset_index().rename(columns={"tranche": "Taille du prompt"})
 
 
@@ -54,12 +62,12 @@ def contention(df: pd.DataFrame, small: int, large: int) -> tuple[pd.DataFrame, 
     for flag, label in ((False, "Sans gros prompt en lecture"), (True, "Avec gros prompt en lecture")):
         sub = s[s["gros_en_cours"] == flag]
         x, d = sub["ttft"], sub["dur"]
-        rows.append({"Petites requêtes": label, "Requêtes": len(x),
-                     "TTFT p50 (s)": x.median() if len(x) else None,
-                     "TTFT p95 (s)": x.quantile(0.95) if len(x) else None,
+        rows.append({"Petites requêtes": label, REQUETES: len(x),
+                     TTFT_P50: x.median() if len(x) else None,
+                     TTFT_P95: x.quantile(0.95) if len(x) else None,
                      # la gêne passe aussi par l'écriture : premier token rapide, puis réponse qui rampe
                      "Durée p50 (s)": d.median() if len(d) else None,
-                     "Durée p95 (s)": d.quantile(0.95) if len(d) else None})
+                     DUREE_P95: d.quantile(0.95) if len(d) else None})
     table = pd.DataFrame(rows)
     return table, verdict(table)
 
@@ -70,14 +78,14 @@ MIN_SAMPLES = 30
 def verdict(table: pd.DataFrame) -> dict:
     """Lecture prudente : il faut assez d'échantillons des deux côtés avant de conclure."""
     without, with_ = table.iloc[0], table.iloc[1]
-    n0, n1 = int(without["Requêtes"]), int(with_["Requêtes"])
+    n0, n1 = int(without[REQUETES]), int(with_[REQUETES])
     if n0 < MIN_SAMPLES or n1 < MIN_SAMPLES:
         return {"lvl": "info", "ratio_p50": None, "ratio_p95": None, "txt":
                 f"Pas encore assez d'échantillons pour conclure ({n0} petites requêtes sans gros prompt en lecture, "
                 f"{n1} avec ; il en faut au moins {MIN_SAMPLES} de chaque côté)."}
-    r50 = with_["TTFT p50 (s)"] / max(without["TTFT p50 (s)"], 1e-3)
-    r95 = with_["TTFT p95 (s)"] / max(without["TTFT p95 (s)"], 1e-3)
-    rd = with_["Durée p95 (s)"] / max(without["Durée p95 (s)"], 1e-3)
+    r50 = with_[TTFT_P50] / max(without[TTFT_P50], 1e-3)
+    r95 = with_[TTFT_P95] / max(without[TTFT_P95], 1e-3)
+    rd = with_[DUREE_P95] / max(without[DUREE_P95], 1e-3)
     if r50 >= 2 or r95 >= 3:
         return {"lvl": "warn", "ratio_p50": r50, "ratio_p95": r95, "txt":
                 f"Hypothèse CONFIRMÉE : quand un gros prompt d'un autre utilisateur est en lecture sur la même stack, "
@@ -112,16 +120,16 @@ def key_concurrency(df: pd.DataFrame, limits: tuple[int, ...] = (2, 3, 4)) -> pd
         ev["c"] = ev["d"].cumsum()
         per_min = per_minute_level(ev)
         per_min = per_min[per_min > 0]
-        row = {"Utilisateur": user, "Clé": alias, "Requêtes": len(g),
-               "Pic simultané": int(ev["c"].max()),
+        row = {"Utilisateur": user, "Clé": alias, REQUETES: len(g),
+               PIC_SIMULTANE: int(ev["c"].max()),
                "Simultané p95 (minutes actives)": float(per_min.quantile(0.95)) if len(per_min) else 0.0,
                "Minutes actives": len(per_min)}
         for n in limits:
             row[f"Minutes > {n}"] = int((per_min > n).sum())
         rows.append(row)
-    cols = ["Utilisateur", "Clé", "Requêtes", "Pic simultané", "Simultané p95 (minutes actives)", "Minutes actives"] + \
+    cols = ["Utilisateur", "Clé", REQUETES, PIC_SIMULTANE, "Simultané p95 (minutes actives)", "Minutes actives"] + \
         [f"Minutes > {n}" for n in limits]
-    return pd.DataFrame(rows, columns=cols).sort_values("Pic simultané", ascending=False)
+    return pd.DataFrame(rows, columns=cols).sort_values(PIC_SIMULTANE, ascending=False)
 
 
 def top_prompts(df: pd.DataFrame, n: int = 20) -> pd.DataFrame:
