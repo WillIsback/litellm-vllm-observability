@@ -485,7 +485,7 @@ def decode_section(p: Prom, per: Period) -> dict:
         v(f"sum by (provider) (increase({sel('req_gen')}[{w}])) / clamp_min(sum by (provider) (increase({sel('dec_time')}[{w}])), 1e-9)",
           "Débit d'écriture moyen par requête (tok/s)"),
         v(f"sum by (provider) (increase({sel('sd_acc')}[{w}])) / clamp_min(sum by (provider) (increase({sel('sd_dtok')}[{w}])), 1)",
-          "Taux d'acceptation spéculatif"),
+          "% acceptation spéculative"),
         v(f"1 + sum by (provider) (increase({sel('sd_acc')}[{w}])) / clamp_min(sum by (provider) (increase({sel('sd_drafts')}[{w}])), 1)",
           "Tokens par pas (moyenne)"),
     ]
@@ -617,11 +617,16 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
     df["prompt_tokens"] = df["prompt_tokens"].fillna(0).astype(int)
     cont_table, cont_verdict = hyp.contention(df, SMALL_PROMPT, LARGE_PROMPT)
     small_ttft = df.loc[df["prompt_tokens"] < SMALL_PROMPT, "ttft"]
+    # écriture par requête : circonstances calculées sur tout le trafic, débit mesuré sur l'usage réel
+    rq = dec.request_conditions(df)
+    rq_tables = dec.request_tables(rq[rq.index.isin(usage.index)])
 
     out = {
         "n": len(usage), "by_team": by_team, "by_user": by_user, "by_base": by_base, "conc": conc,
         "by_size": hyp.ttft_by_bucket(df, SMALL_PROMPT, LARGE_PROMPT),
         "contention": cont_table, "verdict": cont_verdict,
+        "rq_tables": rq_tables, "rq_verdict": dec.request_verdict(rq_tables),
+        "period_from": df["start"].min(), "period_to": df["start"].max(),
         "small_ttft_p95": small_ttft.quantile(0.95) if small_ttft.notna().any() else None,
         "key_conc": hyp.key_concurrency(usage),
         "top": hyp.top_prompts(df),
@@ -698,7 +703,8 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
             share = tot.max() / tot.sum()
             who = users.iloc[int(tot.values.argmax())]
             if share > 0.4:
-                any_sat = any(n_["lvl"] == "warn" for n_ in notes)
+                # saturation des stacks seulement : le verdict de l'hypothèse n'est pas un signal de saturation
+                any_sat = any(n_["lvl"] == "warn" and n_["stack"] not in ("hypothèse", "écriture") for n_ in notes)
                 notes.append({"lvl": "warn" if any_sat else "info", "stack": "global", "txt":
                     f"{who.get('Utilisateur', '?')} ({who.get('Clé', '?')}) concentre {share:.0%} des tokens. "
                     + ("Combiné aux signaux de saturation : envisager une limite par clé (max_parallel_requests / tpm_limit dans LiteLLM)."
@@ -725,6 +731,8 @@ def df_html(df: pd.DataFrame) -> str:
     for c in d.columns:
         if c.startswith("%") or c.startswith("Part") or c in ("KV p95", "Hit prefix"):
             d[c] = d[c].map(lambda x: "–" if pd.isna(x) else f"{x:.1%}".replace(".", ","))
+        elif "par pas" in c:
+            d[c] = d[c].map(lambda x: "–" if pd.isna(x) else f"{x:.1f}".replace(".", ","))
         elif "(s)" in c:
             d[c] = d[c].map(lambda x: "–" if pd.isna(x) else (f"{x*1000:.0f} ms" if x < 1 else f"{x:.2f} s".replace(".", ",")))
         elif pd.api.types.is_numeric_dtype(d[c]):
@@ -770,7 +778,9 @@ def _sl_context(sl: dict | None) -> dict | None:
         "n": fmt_num(sl["n"]), "team": df_html(sl["by_team"]), "user": df_html(sl["by_user"]),
         "base": df_html(sl["by_base"]), "chart_conc": sl["chart_conc"],
         "by_size": df_html(sl["by_size"]), "contention": df_html(sl["contention"]), "verdict": sl["verdict"],
-        "key_conc": df_html(sl["key_conc"]), "top": df_html(sl["top"])}
+        "key_conc": df_html(sl["key_conc"]), "top": df_html(sl["top"]),
+        "rq": {k: df_html(v) for k, v in sl["rq_tables"].items()}, "rq_verdict": sl["rq_verdict"],
+        "rq_from": f"{sl['period_from']:%d/%m/%Y}", "rq_to": f"{sl['period_to']:%d/%m/%Y}"}
 
 
 def build(per: Period) -> Path:
@@ -789,6 +799,8 @@ def build(per: Period) -> Path:
     notes = diagnose(eng, gw, sl if sl and "error" not in sl else None)
     if dcd["verdict"]:
         notes.insert(0, {**dcd["verdict"], "stack": "écriture"})
+    if sl and "error" not in sl and sl.get("rq_verdict"):
+        notes.insert(0, {**sl["rq_verdict"], "stack": "écriture"})
 
     kpis = _kpis(gw, sl)
 
@@ -825,6 +837,8 @@ def build(per: Period) -> Path:
         write_csv(per, "hypothese_petites_requetes", sl["contention"])
         write_csv(per, "concurrence_par_cle", sl["key_conc"])
         write_csv(per, "plus_gros_prompts", sl["top"])
+        for name, tab in sl["rq_tables"].items():
+            write_csv(per, f"ecriture_par_requete_{name}", tab)
     if not eng["canary"].empty:
         write_csv(per, "sonde_temoin", eng["canary"])
     print(f"✔ {out}")

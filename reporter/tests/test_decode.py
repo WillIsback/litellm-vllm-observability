@@ -44,7 +44,7 @@ def test_interference_compare_a_concurrence_egale():
     t = dec.interference(dec.prepare(m)).set_index("Conversations en cours")
     assert t.loc["1", f"{dec.LVL_NONE} (tok/s)"] == 30
     assert t.loc["1", f"{dec.LVL_HEAVY} (tok/s)"] == 6
-    assert round(t.loc["1", "Perte en lecture lourde"], 2) == 0.8
+    assert round(t.loc["1", dec.COL_LOSS], 2) == 0.8
     assert pd.isna(t.loc["2", f"{dec.LVL_HEAVY} (tok/s)"])   # moins de 30 minutes : pas de conclusion
 
 
@@ -54,7 +54,7 @@ def test_verdict_designe_la_lecture_quand_elle_domine():
         minutes(40, 1, 5, prefill=2000),                      # lecture lourde : ×6
     ])
     v = dec.verdict(dec.prepare(m))
-    assert v["lvl"] == "warn" and "lecture lourde" in v["txt"] and "×6.0" in v["txt"]
+    assert v["lvl"] == "warn" and "×6.0" in v["txt"] and "×1.2" in v["txt"]
 
 
 def test_verdict_sans_assez_de_minutes():
@@ -64,3 +64,52 @@ def test_verdict_sans_assez_de_minutes():
 def test_rendement_speculatif():
     d = dec.prepare(minutes(3, 1, 30, spec=(10.0, 15.0)))
     assert d["spec_yield"].tolist() == [2.5] * 3
+
+
+T0 = pd.Timestamp("2026-10-01 09:00", tz="Europe/Paris")
+
+
+def rq(start_s, ttft_s, dur_s, out, prompt=2_000, base="http://a/v1"):
+    s = T0 + pd.Timedelta(seconds=start_s)
+    return {"start": s, "first_tok": s + pd.Timedelta(seconds=ttft_s), "end_": s + pd.Timedelta(seconds=dur_s),
+            "completion_tokens": out, "prompt_tokens": prompt, "api_base": base}
+
+
+def test_par_requete_lecture_longue_et_cache():
+    df = pd.DataFrame([
+        rq(0, 1, 41, 400),                        # écrit de 1 à 41 s (milieu 21 s)
+        rq(10, 120, 130, 10, prompt=400_000),     # lecture à froid de 10 à 120 s -> lecture longue
+        rq(200, 1, 41, 400),                      # écrit de 201 à 241 s (milieu 221 s)
+        rq(210, 6, 30, 10, prompt=800_000),       # 800 k servis par le cache : 6 s -> pas une lecture longue
+        rq(0, 1, 41, 400, base="http://b/v1"),    # autre stack
+    ])
+    d = dec.request_conditions(df)
+    assert d.sort_values(["api_base", "start"])["lec_longue"].tolist() == [True, False, False]
+    assert round(d.iloc[0]["tok_s"], 1) == 10.0
+    a2 = d[(d["api_base"] == "http://a/v1") & (d["start"] == T0 + pd.Timedelta(seconds=200))]
+    assert a2["ecr_autres"].item() == 1           # la requête « en cache » écrit à 221 s
+
+
+def test_par_requete_verdict():
+    rows = []
+    for i in range(40):
+        b = i * 1000
+        rows.append(rq(b, 1, 21, 400))                       # seule, sans lecture : 20 tok/s
+        rows.append(rq(b + 500, 1, 81, 400))                 # pendant une lecture longue : 5 tok/s
+        rows.append(rq(b + 480, 100, 140, 10, prompt=300_000))  # lecture longue (trop courte pour compter)
+    t = dec.request_tables(dec.request_conditions(pd.DataFrame(rows)))
+    v = dec.request_verdict(t)
+    assert v["lvl"] == "warn" and "lecture longue" in v["txt"] and "×4.0" in v["txt"]
+
+
+def test_plateau_ignore_un_creux_isole():
+    # gain < 10 % entre 3 et 4, mais reprise ensuite : pas de plafond
+    m = pd.concat([minutes(40, 1, 40), minutes(40, 3, 25), minutes(40, 4, 20.5), minutes(40, 6, 16)])
+    assert dec.plateau(dec.saturation(dec.prepare(m))) == {"stack-a": None}
+
+
+def test_verdict_pondere_par_la_frequence():
+    # lecture lourde très pénalisante mais rare, bande passante modérée mais fréquente
+    m = pd.concat([minutes(300, 1, 40), minutes(400, 4, 20), minutes(30, 1, 10, prefill=2000)])
+    v = dec.verdict(dec.prepare(m))
+    assert v["txt"].index("bande passante") < v["txt"].index("lecture lourde")
