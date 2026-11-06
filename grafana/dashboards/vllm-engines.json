@@ -1278,6 +1278,264 @@
           "mode": "multi"
         }
       }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "Écriture (décodage) et bande passante",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 57,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 301,
+      "type": "timeseries",
+      "title": "Débit d'écriture : cumulé et par conversation",
+      "description": "Cumulé : tokens générés par seconde sur la stack. Par conversation : cumulé / requêtes en cours (inclut les requêtes encore en lecture). Si le cumulé plafonne quand la concurrence monte, la bande passante mémoire est saturée.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (provider) (rate({__name__=~\"vllm:generation_tokens(_total)?\",provider=~\"$provider\"}[1m]))",
+          "legendFormat": "{{provider}} cumulé",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (provider) (rate({__name__=~\"vllm:generation_tokens(_total)?\",provider=~\"$provider\"}[1m])) / clamp_min(sum by (provider) (avg_over_time({__name__=~\"vllm:num_requests_running\",provider=~\"$provider\"}[1m])), 1)",
+          "legendFormat": "{{provider}} par conversation",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 302,
+      "type": "timeseries",
+      "title": "Lecture réellement calculée (hors cache) vs écriture",
+      "description": "Tokens traités par pas (iteration_tokens) moins tokens générés : la lecture calculée en temps réel, contrairement à prompt_tokens qui n'avance qu'en fin de lecture. Une lecture lourde (≥ 1 000 tok/s) ralentit l'écriture de tous sur la stack.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 58,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (provider) (rate({__name__=~\"vllm:iteration_tokens_total_sum\",provider=~\"$provider\"}[1m])) - sum by (provider) (rate({__name__=~\"vllm:generation_tokens(_total)?\",provider=~\"$provider\"}[1m]))",
+          "legendFormat": "{{provider}} lecture calculée",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (provider) (rate({__name__=~\"vllm:generation_tokens(_total)?\",provider=~\"$provider\"}[1m]))",
+          "legendFormat": "{{provider}} écriture",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 303,
+      "type": "timeseries",
+      "title": "Décodage spéculatif : tokens par pas et taux d'acceptation",
+      "description": "Tokens par pas = 1 + tokens acceptés / brouillons. Une baisse fait chuter le débit sans que la machine soit plus chargée.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 66,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "1 + sum by (provider) (rate({__name__=~\"vllm:spec_decode_num_accepted_tokens(_total)?\",provider=~\"$provider\"}[5m])) / clamp_min(sum by (provider) (rate({__name__=~\"vllm:spec_decode_num_drafts(_total)?\",provider=~\"$provider\"}[5m])), 1e-9)",
+          "legendFormat": "{{provider}} tokens / pas",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (provider) (rate({__name__=~\"vllm:spec_decode_num_accepted_tokens(_total)?\",provider=~\"$provider\"}[5m])) / clamp_min(sum by (provider) (rate({__name__=~\"vllm:spec_decode_num_draft_tokens(_total)?\",provider=~\"$provider\"}[5m])), 1e-9)",
+          "legendFormat": "{{provider}} taux d'acceptation",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 304,
+      "type": "timeseries",
+      "title": "Débit d'écriture moyen par requête (fin de requête)",
+      "description": "Tokens générés / temps de décodage, pour les requêtes terminées sur la fenêtre (compteurs par requête de vLLM).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-llm"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 66,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-llm"
+          },
+          "expr": "sum by (provider) (rate({__name__=~\"vllm:request_generation_tokens_sum\",provider=~\"$provider\"}[5m])) / clamp_min(sum by (provider) (rate({__name__=~\"vllm:request_decode_time_seconds_sum\",provider=~\"$provider\"}[5m])), 1e-9)",
+          "legendFormat": "{{provider}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ],
   "annotations": {

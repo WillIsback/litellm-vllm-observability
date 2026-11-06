@@ -82,7 +82,21 @@ h3{font-size:16px;margin:22px 0 8px}
 <div class="card">{% if eng.chart_conc %}<img alt="Concurrence" src="data:image/png;base64,{{ eng.chart_conc }}">{% endif %}</div>
 <div class="card">{% if eng.chart_kv %}<img alt="KV cache" src="data:image/png;base64,{{ eng.chart_kv }}">{% endif %}</div>
 
-<h2>3. Données exactes par requête (LiteLLM SpendLogs)</h2>
+<h2>3. Écriture (décodage) et bande passante</h2>
+{% if dcd.minutes %}
+<p class="muted">Sur GB10, chaque token écrit relit les poids actifs du modèle et le cache KV de chaque conversation en cours : le débit d'écriture est borné par la bande passante mémoire. Analyse sur {{ dcd.minutes }} minutes d'écriture (une ligne = une stack × une minute). « Lecture » = tokens de prompt réellement calculés (hors cache) pendant la minute : aucune &lt; {{ dcd.light }} tok/s, lourde ≥ {{ dcd.heavy }} tok/s. Débit par conversation = débit cumulé / requêtes en cours (les requêtes encore en lecture sont comptées : à lire comme une tendance).</p>
+{% if dcd.verdict %}<div class="note {{ dcd.verdict.lvl }}"><b>Verdict</b> {{ dcd.verdict.txt }}</div>{% endif %}
+<h3>Par stack</h3><div class="card">{{ dcd.summary|safe }}</div>
+<div class="card">{% if dcd.chart %}<img alt="Débit d'écriture" src="data:image/png;base64,{{ dcd.chart }}">{% endif %}</div>
+<h3>Bande passante : minutes sans lecture, selon la concurrence</h3>
+<p class="muted">Si le débit cumulé cesse de monter quand on ajoute des conversations, la bande passante est saturée : chaque conversation de plus ralentit les autres sans rien produire de plus.</p>
+<div class="card">{{ dcd.saturation|safe }}</div>
+<h3>Interférence de la lecture, à concurrence égale</h3>
+<p class="muted">Chaque pas de décodage porte aussi un morceau de lecture (<code>max_num_batched_tokens</code>) : plus il est gros, plus l'écriture des autres ralentit. Cases vides : moins de 30 minutes observées.</p>
+<div class="card">{{ dcd.interference|safe }}</div>
+{% else %}<p class="muted">Métriques d'écriture indisponibles (vllm:iteration_tokens_total, vllm:generation_tokens_total).</p>{% endif %}
+
+<h2>4. Données exactes par requête (LiteLLM SpendLogs)</h2>
 {% if sl is none %}<p class="muted">Non configuré (LITELLM_PG_HOST absent).</p>
 {% elif sl.error %}<div class="note warn"><b>SpendLogs</b> {{ sl.error }}</div>
 {% else %}

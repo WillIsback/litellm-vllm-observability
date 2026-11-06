@@ -35,6 +35,7 @@ import requests  # noqa: E402
 from jinja2 import Environment, FileSystemLoader, select_autoescape  # noqa: E402
 
 import analyse as hyp  # noqa: E402
+import decode as dec  # noqa: E402
 
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Paris"))
 PROM_URL = os.environ.get("PROM_URL", "http://localhost:9090").rstrip("/")
@@ -83,11 +84,19 @@ M = {
     "queue": "vllm:request_queue_time_seconds_bucket",
     "phit": "vllm:(gpu_)?prefix_cache_hits(_total)?",
     "pq": "vllm:(gpu_)?prefix_cache_queries(_total)?",
+    # écriture : pas de calcul, temps de décodage par requête, décodage spéculatif
+    "iter": "vllm:iteration_tokens_total_sum",
+    "dec_time": "vllm:request_decode_time_seconds_sum",
+    "req_gen": "vllm:request_generation_tokens_sum",
+    "sd_drafts": "vllm:spec_decode_num_drafts(_total)?",
+    "sd_dtok": "vllm:spec_decode_num_draft_tokens(_total)?",
+    "sd_acc": "vllm:spec_decode_num_accepted_tokens(_total)?",
     # Sonde témoin (service canary)
     "canary_ttft": "canary_ttft_seconds_bucket",
     "canary_req": "canary_requests_total",
 }
-OPTIONAL = {"canary_ttft", "canary_req"}  # absentes si la sonde n'est pas configurée
+OPTIONAL = {"canary_ttft", "canary_req",   # absentes si la sonde n'est pas configurée
+            "sd_drafts", "sd_dtok", "sd_acc"}  # absentes sans décodage spéculatif
 
 
 def sel(key: str, extra: str = "") -> str:
@@ -155,6 +164,21 @@ class Prom:
             v = float(r["value"][1])
             rows.append({**{lab: r["metric"].get(lab, "") for lab in labels}, col: None if math.isnan(v) else v})
         return pd.DataFrame(rows, columns=labels + [col])
+
+    def range_df_chunked(self, expr: str, start: datetime, end: datetime, step: int, label: str,
+                         chunk: timedelta = timedelta(days=7)) -> pd.DataFrame:
+        """range_df par tranches : Prometheus refuse plus de 11 000 points par série et par requête."""
+        parts, t = [], start
+        while t < end:
+            t2 = min(t + chunk, end)
+            part = self.range_df(expr, t, t2, step, label)
+            if not part.empty:
+                parts.append(part)
+            t = t2 + timedelta(seconds=step)
+        if not parts:
+            return pd.DataFrame()
+        df = pd.concat(parts)
+        return df[~df.index.duplicated()].sort_index()
 
     def range_df(self, expr: str, start: datetime, end: datetime, step: int, label: str) -> pd.DataFrame:
         """DataFrame index=temps (TZ locale), colonnes=valeurs du label."""
@@ -392,6 +416,93 @@ def engine_section(p: Prom, per: Period) -> dict:
         "chart_conc": chart_lines(conc, "Requêtes simultanées (max horaire)", "requêtes"),
         "chart_kv": chart_lines(kv, "Occupation KV cache (max horaire)", "KV cache", pct=True),
     }
+
+
+# --- collecte Prometheus : écriture et bande passante ----------------------------------
+def chart_decode(sat: pd.DataFrame, inter: pd.DataFrame) -> str | None:
+    if sat.empty and inter.empty:
+        return None
+    fig, axes = plt.subplots(1, 2, figsize=(11, 3.6))
+    ok = sat[sat[dec.COL_MIN] >= dec.MIN_MINUTES]
+    for stack, g in ok.groupby("Stack"):
+        axes[0].plot(g["Conversations en cours"].astype(str), g[dec.COL_AGG], marker="o", label=f"{stack} cumulé")
+        axes[0].plot(g["Conversations en cours"].astype(str), g[dec.COL_STREAM], marker="o", ls="--",
+                     label=f"{stack} par conversation")
+    axes[0].set_title("Sans lecture : bande passante partagée", fontsize=10, loc="left")
+    axes[0].set_xlabel("conversations en cours")
+    axes[0].set_ylabel("tok/s")
+    cols = [c for c in inter.columns if c.endswith("(tok/s)")]
+    for stack, g in inter.groupby("Stack"):
+        for c, ls in zip(cols, ["-", ":", "--"]):
+            if g[c].notna().any():
+                axes[1].plot(g["Conversations en cours"].astype(str), g[c], marker="o", ls=ls,
+                             label=f"{stack} · {c.replace(' (tok/s)', '').lower()}")
+    axes[1].set_title("Débit par conversation selon la lecture en cours", fontsize=10, loc="left")
+    axes[1].set_xlabel("conversations en cours")
+    for ax in axes:
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=7)
+    fig.tight_layout()
+    return fig_to_b64(fig)
+
+
+def decode_section(p: Prom, per: Period) -> dict:
+    """Minutes par stack : débit d'écriture, conversations en cours, lecture calculée, rendement spéculatif."""
+    at, w = per.end, per.win
+    lab = ["provider"]
+
+    def rng(expr):
+        return p.range_df_chunked(expr, per.start, per.end, 60, "provider")
+
+    series = {
+        "running": rng(f"sum by (provider) (avg_over_time({sel('running')}[1m]))"),
+        "gen": rng(f"sum by (provider) (rate({sel('gtok')}[1m]))"),
+        "iter_tok": rng(f"sum by (provider) (rate({sel('iter')}[1m]))"),
+        "drafts": rng(f"sum by (provider) (rate({sel('sd_drafts')}[1m]))"),
+        "accepted": rng(f"sum by (provider) (rate({sel('sd_acc')}[1m]))"),
+    }
+    long = []
+    for col, df in series.items():
+        if df.empty:
+            continue
+        s_ = df.stack()
+        s_.index.names = ["t", "provider"]
+        long.append(s_.rename(col))
+    empty = {"summary": pd.DataFrame(), "saturation": pd.DataFrame(), "interference": pd.DataFrame(),
+             "verdict": None, "chart": None, "minutes": 0}
+    if not long or series["gen"].empty or series["running"].empty or series["iter_tok"].empty:
+        return empty
+    m = pd.concat(long, axis=1).reset_index()
+    d = dec.prepare(m)
+    if d.empty:
+        return empty
+    sat, inter = dec.saturation(d), dec.interference(d)
+
+    # récapitulatif par stack sur la période (compteurs exacts, pas des minutes)
+    def v(expr, col):
+        return p.vector_df(expr, at, lab, col)
+    parts = [
+        v(f"sum by (provider) (increase({sel('req_gen')}[{w}])) / clamp_min(sum by (provider) (increase({sel('dec_time')}[{w}])), 1e-9)",
+          "Débit d'écriture moyen par requête (tok/s)"),
+        v(f"sum by (provider) (increase({sel('sd_acc')}[{w}])) / clamp_min(sum by (provider) (increase({sel('sd_dtok')}[{w}])), 1)",
+          "Taux d'acceptation spéculatif"),
+        v(f"1 + sum by (provider) (increase({sel('sd_acc')}[{w}])) / clamp_min(sum by (provider) (increase({sel('sd_drafts')}[{w}])), 1)",
+          "Tokens par pas (moyenne)"),
+    ]
+    summ = parts[0]
+    for part in parts[1:]:
+        summ = summ.merge(part, on=lab, how="outer")
+    by = d.groupby("provider")
+    extra = pd.DataFrame({
+        "Minutes d'écriture": by.size(),
+        "Débit par conversation médian (tok/s)": by["per_stream"].median(),
+        "% minutes en lecture lourde": by["prefill_lvl"].apply(lambda x: (x == dec.LVL_HEAVY).mean()),
+    }).reset_index()
+    summ = summ.merge(extra, on="provider", how="outer").rename(columns={"provider": "Stack"})
+    pl = dec.plateau(sat)
+    summ["Plafond de bande passante (conversations)"] = summ["Stack"].map(lambda s: pl.get(s) or "non atteint")
+    return {"summary": summ, "saturation": sat, "interference": inter, "verdict": dec.verdict(d),
+            "chart": chart_decode(sat, inter), "minutes": len(d)}
 
 
 # --- collecte SpendLogs ---------------------------------------------------------------
@@ -671,9 +782,13 @@ def build(per: Period) -> Path:
     gw = gateway_section(p, per, anon)
     print("· moteurs vLLM…")
     eng = engine_section(p, per)
+    print("· écriture et bande passante…")
+    dcd = decode_section(p, per)
     print("· SpendLogs…")
     sl = spendlogs_section(per, anon)
     notes = diagnose(eng, gw, sl if sl and "error" not in sl else None)
+    if dcd["verdict"]:
+        notes.insert(0, {**dcd["verdict"], "stack": "écriture"})
 
     kpis = _kpis(gw, sl)
 
@@ -685,6 +800,9 @@ def build(per: Period) -> Path:
             "chart_daily": gw["chart_daily"], "chart_heatmap": gw["chart_heatmap"]},
         eng={"table": df_html(eng["table"]), "chart_conc": eng["chart_conc"], "chart_kv": eng["chart_kv"],
              "canary": df_html(eng["canary"]) if not eng["canary"].empty else None, "chart_canary": eng["chart_canary"]},
+        dcd={"summary": df_html(dcd["summary"]), "saturation": df_html(dcd["saturation"]),
+             "interference": df_html(dcd["interference"]), "chart": dcd["chart"], "minutes": dcd["minutes"],
+             "verdict": dcd["verdict"], "light": dec.PREFILL_LIGHT, "heavy": dec.PREFILL_HEAVY},
         small=SMALL_PROMPT, large=LARGE_PROMPT,
         sl=_sl_context(sl),
     )
@@ -696,6 +814,9 @@ def build(per: Period) -> Path:
     write_csv(per, "gateway_par_utilisateur", gw["by_user"])
     write_csv(per, "gateway_requetes_horaires", gw["hourly_csv"])
     write_csv(per, "moteurs_par_stack", eng["table"])
+    write_csv(per, "ecriture_par_stack", dcd["summary"])
+    write_csv(per, "ecriture_bande_passante", dcd["saturation"])
+    write_csv(per, "ecriture_interference_lecture", dcd["interference"])
     if sl and "error" not in sl:
         write_csv(per, "spendlogs_par_team", sl["by_team"])
         write_csv(per, "spendlogs_par_utilisateur", sl["by_user"])
