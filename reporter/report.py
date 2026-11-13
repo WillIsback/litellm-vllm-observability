@@ -11,6 +11,7 @@ Usage :
   report.py --previous-month      # mois calendaire précédent
   report.py --start 2026-10-01 --end 2026-11-01
   report.py check                 # vérifie cibles et noms de métriques disponibles
+  report.py export --days 30      # données brutes + consigne neutre pour une analyse par IA
 """
 from __future__ import annotations
 
@@ -1008,14 +1009,19 @@ def check() -> int:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", nargs="?", default="report", choices=["report", "check"])
+    ap.add_argument("cmd", nargs="?", default="report", choices=["report", "check", "export"])
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--start")
     ap.add_argument("--end")
     ap.add_argument("--previous-month", action="store_true")
+    ap.add_argument("--seed", type=int, help="export : graine de l'ordre des aspects dans prompt.md")
     a = ap.parse_args()
     if a.cmd == "check":
         sys.exit(check())
+    if a.cmd == "export":
+        import export  # données brutes pour une analyse par IA, sans verdict
+        export.run(parse_period(a), a.seed)
+        return
     build(parse_period(a))
 
 

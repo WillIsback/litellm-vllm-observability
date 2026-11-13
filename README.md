@@ -34,6 +34,30 @@ Chaque chiffre est comparé à la période précédente de même durée, si Prom
 part des personnes ayant accès si `TARGET_USERS` est renseigné dans `.env`), la disponibilité des serveurs
 et l'usage par modèle. Une donnée absente donne une phrase qui le dit, jamais un chiffre par défaut.
 
+## Export pour une analyse par IA
+
+```bash
+docker compose run --rm reporter export --previous-month
+```
+
+Produit `./reports/export-ia_<période>.zip` : les mesures brutes, sans seuil ni verdict, pour qu'une IA
+les analyse sans être orientée par les conclusions du rapport.
+
+| Fichier | Contenu |
+|---|---|
+| `requests.csv` | une ligne par requête (SpendLogs) ; le monitoring est gardé et étiqueté (`source`) |
+| `engine_minutes.csv` | une ligne par serveur vLLM et par minute |
+| `probe_minutes.csv` | une ligne par cible de la sonde et par minute |
+| `gateway_minutes.csv` | une ligne par équipe et par minute |
+| `dictionary.md` | colonnes, unités, limites de mesure, en termes factuels |
+| `prompt.md` | consigne ouverte : qualité des données, description, explications concurrentes, limites, synthèse |
+| `manifest.json` | période, volumes, graine, empreintes SHA-256 |
+
+Pour limiter les biais : ne pas joindre le rapport mensuel ; les aspects de `prompt.md` sont dans un ordre tiré
+au hasard (`--seed N` pour le fixer) ; lancer l'analyse dans deux ou trois sessions vierges avec des graines
+différentes et comparer. Les données sont pseudonymisées si `ANONYMIZE_USERS=true` (défaut), mais restent des
+données d'usage internes : vérifier la politique applicable avant de les confier à un service externe.
+
 ## Ce qui tranche l'hypothèse
 
 | Où | Quoi | Pourquoi |
