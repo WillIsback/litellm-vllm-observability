@@ -36,12 +36,16 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape  # noqa: E40
 
 import analyse as hyp  # noqa: E402
 import decode as dec  # noqa: E402
+import synthese as syn  # noqa: E402
 
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Paris"))
 PROM_URL = os.environ.get("PROM_URL", "http://localhost:9090").rstrip("/")
 OUT_DIR = Path(os.environ.get("REPORT_DIR", "/reports"))
 SLO_TTFT = float(os.environ.get("SLO_TTFT_P95", "2.0"))
-SLO_ITL = float(os.environ.get("SLO_ITL_P95", "0.10"))
+SLO_ITL = float(os.environ.get("SLO_ITL_P95", "0.2"))  # même défaut que .env.example (plafond de décodage GB10)
+# Nombre de personnes ayant accès au service (optionnel) : donne le taux d'adoption dans la synthèse
+SCRAPE_S = 15  # scrape_interval de prometheus/prometheus.yml
+TARGET_USERS = int(os.environ.get("TARGET_USERS", "0") or 0) or None
 ANONYMIZE = os.environ.get("ANONYMIZE_USERS", "true").lower() in ("1", "true", "yes")
 # Seuils de l'analyse « gros prompts vs petites requêtes » (tokens d'entrée)
 SMALL_PROMPT = int(os.environ.get("SMALL_PROMPT_TOKENS", "8000"))
@@ -293,12 +297,11 @@ def chart_heatmap(df_hourly: pd.DataFrame, title: str) -> str | None:
 
 
 # --- collecte Prometheus : gateway --------------------------------------------------
-def gateway_section(p: Prom, per: Period, anon: Anon) -> dict:
-    at, w = per.end, per.win
-    out: dict = {}
+def gateway_kpis(p: Prom, at: datetime, w: str) -> dict:
+    """Indicateurs de tête sur la fenêtre [at - w, at] (appelé aussi sur la période précédente)."""
     req, fail = sel_gw("req"), sel_gw("fail")
     req_user = sel_gw("req", 'user!="",user!="None"')  # compteur « Utilisateurs actifs » : hors comptes rattachés à rien
-    out["kpi"] = {
+    return {
         "requests": p.scalar(f"sum(increase({req}[{w}]))", at),
         "failures": p.scalar(f"sum(increase({fail}[{w}]))", at),
         "tin": p.scalar(f"sum(increase({sel_gw('tin')}[{w}]))", at),
@@ -309,6 +312,36 @@ def gateway_section(p: Prom, per: Period, anon: Anon) -> dict:
         "lat_p95": p.scalar(f"histogram_quantile(0.95, sum by (le) (increase({sel_gw('lat')}[{w}])))", at),
         "ovh_p95": p.scalar(f"histogram_quantile(0.95, sum by (le) (increase({sel_gw('ovh')}[{w}])))", at),
     }
+
+
+def peak_moment(hourly: pd.DataFrame) -> str | None:
+    """« le mardi vers 10 h » : créneau jour × heure le plus chargé en moyenne."""
+    if hourly is None or hourly.empty:
+        return None
+    s = hourly.sum(axis=1)
+    if s.max() <= 0:
+        return None
+    t = s.groupby([s.index.dayofweek, s.index.hour]).mean()
+    dow, h = t.idxmax()
+    jours = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+    return f"le {jours[dow]} vers {h} h"
+
+
+def gateway_section(p: Prom, per: Period, anon: Anon) -> dict:
+    at, w = per.end, per.win
+    out: dict = {}
+    req, fail = sel_gw("req"), sel_gw("fail")
+    out["kpi"] = gateway_kpis(p, at, w)
+    # Part de la fenêtre réellement collectée (scrape toutes les SCRAPE_S s) : sans historique complet,
+    # une comparaison avec la période précédente montrerait une fausse croissance.
+    cov = f'max(count_over_time(up{{job="litellm"}}[{w}])) / {per.secs / SCRAPE_S}'
+    out["coverage"], out["coverage_prev"] = p.scalar(cov, at), p.scalar(cov, per.start)
+    prev_ok = (out["coverage_prev"] or 0) >= 0.9
+    out["kpi_prev"] = gateway_kpis(p, per.start, w) if prev_ok else dict.fromkeys(out["kpi"])
+    req_user = sel_gw("req", 'user!="",user!="None"')
+    out["new_users"] = p.scalar(
+        f"count((sum by (user) (increase({req_user}[{w}])) > 0) unless on (user) "
+        f"(sum by (user) (increase({req_user}[{w}] offset {w})) > 0))", at) if out["kpi_prev"]["users"] else None
 
     def by(labels: list[str]) -> pd.DataFrame:
         g = ", ".join(labels)
@@ -344,6 +377,7 @@ def gateway_section(p: Prom, per: Period, anon: Anon) -> dict:
     hourly = p.range_df(f"sum by (team_alias) (increase({req}[1h]))", per.start + timedelta(hours=1), per.end, 3600, "team_alias")
     out["chart_heatmap"] = chart_heatmap(hourly, "Profil d'usage : jour × heure")
     out["hourly_csv"] = hourly
+    out["peak"] = peak_moment(hourly)
     return out
 
 
@@ -406,12 +440,20 @@ def engine_section(p: Prom, per: Period) -> dict:
         for part in cparts[1:]:
             canary = canary.merge(part, on=cl, how="outer")
         canary = canary.rename(columns={"target": "Cible"})
+    fast = p.scalar(f"sum(increase({c_le10}[{w}])) / clamp_min(sum(increase({c_inf}[{w}])), 1)", at) \
+        if not canary.empty else None
+    # Joignabilité vue par Prometheus (up) : une cible qui ne répond pas au scrape est comptée indisponible
+    avail = p.vector_df(f'avg by (provider) (avg_over_time(up{{job="vllm"}}[{w}]))', at, lab, "Disponibilité")
     ctt = p.range_df(f"histogram_quantile(0.95, sum by (le, target) (increase({sel('canary_ttft')}[1h])))",
                      start, per.end, 3600, "target")
 
+    if not avail.empty and not df.empty:
+        df = df.merge(avail, on="provider", how="left") if "provider" in df else df.merge(
+            avail.rename(columns={"provider": "Stack"}), on="Stack", how="left")
     return {
         "table": df,
         "canary": canary,
+        "canary_fast": fast,
         "chart_canary": chart_lines(ctt, "Sonde témoin : TTFT p95 horaire d'une petite requête fixe", "secondes"),
         "chart_conc": chart_lines(conc, "Requêtes simultanées (max horaire)", "requêtes"),
         "chart_kv": chart_lines(kv, "Occupation KV cache (max horaire)", "KV cache", pct=True),
@@ -597,6 +639,15 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
     by_user = agg(usage, ["team", "user_", "key_alias"]).rename(columns={"team": "Team", "user_": "Utilisateur", "key_alias": "Clé"})
     by_base = agg(usage, ["api_base"]).rename(columns={"api_base": "Stack (api_base)"})
     by_base.insert(2, "Part", by_base["Requêtes"] / by_base["Requêtes"].sum())
+    by_model = agg(usage.assign(model_group=usage["model_group"].fillna("(inconnu)")), ["model_group"]).rename(
+        columns={"model_group": "Modèle"})
+    by_model.insert(2, "Part", by_model["Requêtes"] / by_model["Requêtes"].sum())
+    by_model.insert(3, "Utilisateurs", usage[usage["user_"] != AUCUN].assign(
+        model_group=usage["model_group"].fillna("(inconnu)")).groupby("model_group")["user_"].nunique()
+        .reindex(by_model["Modèle"]).fillna(0).astype(int).values)
+    # utilisateurs réguliers : actifs au moins un jour par semaine en moyenne sur la période
+    days = usage[usage["user_"] != AUCUN].groupby("user_")["start"].apply(lambda x: x.dt.date.nunique())
+    regular = int((days >= max(2, round((per.end - per.start).days / 7))).sum())
 
     # concurrence réelle reconstituée à partir des intervalles [start, end] (hors monitoring)
     ev = pd.concat([pd.DataFrame({"t": usage["start"], "d": 1}), pd.DataFrame({"t": usage["end_"], "d": -1})])
@@ -623,7 +674,8 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
 
     out = {
         "n": len(usage), "by_team": by_team, "by_user": by_user, "by_base": by_base, "conc": conc,
-        "by_size": hyp.ttft_by_bucket(df, SMALL_PROMPT, LARGE_PROMPT),
+        "by_size": hyp.ttft_by_bucket(usage, SMALL_PROMPT, LARGE_PROMPT),  # hors sonde et health-check
+        "by_model": by_model, "regular_share": regular / len(days) if len(days) else None,
         "contention": cont_table, "verdict": cont_verdict,
         "rq_tables": rq_tables, "rq_verdict": dec.request_verdict(rq_tables),
         "period_from": df["start"].min(), "period_to": df["start"].max(),
@@ -697,6 +749,8 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
                 f"Répartition déséquilibrée entre stacks (max {t['Part requêtes'].max():.0%}) : vérifier la stratégie de routage LiteLLM."})
 
     users = (sl or {}).get("by_user") if sl and "by_user" in sl else gw.get("by_user")
+    if users is not None and not users.empty and "Utilisateur" in users:
+        users = users[users["Utilisateur"] != AUCUN]  # trafic non rattaché (Open WebUI…) : pas une personne
     if users is not None and not users.empty:
         tot = users[COL_TOKENS_IN].fillna(0) + users[COL_TOKENS_OUT].fillna(0)
         if tot.sum() > 0:
@@ -710,6 +764,60 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
                     + ("Combiné aux signaux de saturation : envisager une limite par clé (max_parallel_requests / tpm_limit dans LiteLLM)."
                        if any_sat else "Sans saturation, pas d'action nécessaire ; à surveiller.")})
     return notes
+
+
+# --- synthèse direction -------------------------------------------------------------------
+def synth_context(gw: dict, eng: dict, dcd: dict, sl: dict | None) -> dict:
+    """Rassemble les chiffres utiles à la synthèse (voir synthese.py). Une valeur absente reste None."""
+    k, kp = gw["kpi"], gw["kpi_prev"]
+
+    def success(kk):
+        # compteur d'échecs absent = métrique inconnue, pas « zéro échec » : SpendLogs prendra le relais
+        return 1 - kk["failures"] / kk["requests"] if kk.get("requests") and kk.get("failures") is not None else None
+
+    c = {"users": k["users"], "users_prev": kp["users"], "requests": k["requests"], "requests_prev": kp["requests"],
+         "new_users": gw.get("new_users"), "target_users": TARGET_USERS, "peak": gw.get("peak"),
+         "success_rate": success(k), "success_rate_prev": success(kp), "canary_fast_share": eng.get("canary_fast")}
+    bt = gw["by_team"]
+    if not bt.empty and len(bt) > 1 and bt["Requêtes"].sum() > 0:
+        c["top_team"] = bt.iloc[0]["Team"] or "sans équipe"
+        c["top_team_share"] = bt.iloc[0]["Requêtes"] / bt["Requêtes"].sum()
+    t = eng["table"]
+    if not t.empty:
+        if "Disponibilité" in t and t["Disponibilité"].notna().any():
+            i = t["Disponibilité"].idxmin()
+            c["availability"], c["availability_stack"] = t.at[i, "Disponibilité"], t.at[i, "Stack"]
+        if t["% temps file"].notna().any():
+            i = t["% temps file"].idxmax()
+            c["queue_share"] = t.at[i, "% temps file"]
+            c["queue_stack"] = t.at[i, "Stack"] if len(t) > 1 else None
+        if t["Pic en cours"].notna().any():
+            c["conc_max"] = t["Pic en cours"].max()
+    summ = dcd["summary"]
+    if not summ.empty:
+        col = "Débit par conversation médian (tok/s)"
+        if col in summ and summ[col].notna().any():
+            c["write_speed"] = float(summ[col].median())
+        pl = [int(x) for x in summ["Plafond de bande passante (conversations)"] if str(x).isdigit()]
+        c["plateau"] = min(pl) if pl else None
+    if sl and "error" not in sl:
+        c["conc_max"] = sl["conc"]["max"]  # exact (gateway) plutôt qu'échantillonné
+        c["regular_share"] = sl["regular_share"]
+        c["small_ttft_p95"] = sl["small_ttft_p95"]
+        c["hyp"] = sl["verdict"]
+        if c["success_rate"] is None and sl.get("fail_rate") is not None:
+            c["success_rate"] = 1 - sl["fail_rate"]
+    return c
+
+
+def coverage_note(gw: dict) -> str | None:
+    cov, prev = gw.get("coverage"), gw.get("coverage_prev")
+    notes = []
+    if cov is not None and cov < 0.95:
+        notes.append(f"les mesures couvrent {cov:.0%} de la période (interruptions de collecte)")
+    if (prev or 0) < 0.9:
+        notes.append("pas de comparaison avec la période précédente : son historique est incomplet")
+    return ("Limites : " + " ; ".join(notes) + ".") if notes else None
 
 
 # --- rendu ------------------------------------------------------------------------------
@@ -729,7 +837,7 @@ def df_html(df: pd.DataFrame) -> str:
         return "<p class='muted'>Aucune donnée.</p>"
     d = df.copy()
     for c in d.columns:
-        if c.startswith("%") or c.startswith("Part") or c in ("KV p95", "Hit prefix"):
+        if c.startswith("%") or c.startswith("Part") or c in ("KV p95", "Hit prefix", "Disponibilité"):
             d[c] = d[c].map(lambda x: "–" if pd.isna(x) else f"{x:.1%}".replace(".", ","))
         elif "par pas" in c:
             d[c] = d[c].map(lambda x: "–" if pd.isna(x) else f"{x:.1f}".replace(".", ","))
@@ -753,11 +861,12 @@ def _kpis(gw: dict, sl: dict | None) -> list[tuple[str, str]]:
     k = gw["kpi"]
     kpis = [
         ("Requêtes", fmt_num(k["requests"])),
-        ("Taux d'échec", "–" if not k["requests"] else f"{(k['failures'] or 0)/k['requests']:.1%}".replace(".", ",")),
+        ("Taux d'échec", "–" if not k["requests"] or k["failures"] is None
+         else f"{k['failures'] / k['requests']:.1%}".replace(".", ",")),
         ("Tokens entrée", fmt_num(k["tin"])),
         ("Tokens sortie", fmt_num(k["tout"])),
         ("Utilisateurs actifs", fmt_num(k["users"])),
-        ("TTFT p50 / p95", " / ".join("–" if x is None else f"{x:.2f}s".replace(".", ",") for x in (k["ttft_p50"], k["ttft_p95"]))),
+        ("TTFT p50 / p95 (toutes tailles)", " / ".join("–" if x is None else f"{x:.2f}s".replace(".", ",") for x in (k["ttft_p50"], k["ttft_p95"]))),
         ("Latence totale p95", "–" if k["lat_p95"] is None else f"{k['lat_p95']:.1f}s".replace(".", ",")),
         ("Overhead LiteLLM p95", "–" if k["ovh_p95"] is None else f"{k['ovh_p95']*1000:.0f} ms"),
     ]
@@ -765,6 +874,10 @@ def _kpis(gw: dict, sl: dict | None) -> list[tuple[str, str]]:
         c = sl["conc"]
         kpis.append(("Concurrence max (exacte)", f"{c['max']} ({c['peak_at']})"))
         kpis.append(("Concurrence p95 / min", fmt_num(c["p95_min"])))
+        if sl.get("small_ttft_p95") is not None and not pd.isna(sl["small_ttft_p95"]):
+            kpis.append((f"TTFT p95 requêtes < {SMALL_PROMPT // 1000}k", f"{sl['small_ttft_p95']:.2f}s".replace(".", ",")))
+        if sl.get("fail_rate") is not None:
+            kpis.append(("Taux d'échec (SpendLogs)", f"{sl['fail_rate']:.1%}".replace(".", ",")))
     return kpis
 
 
@@ -776,7 +889,7 @@ def _sl_context(sl: dict | None) -> dict | None:
         return {"error": sl["error"]}
     return {
         "n": fmt_num(sl["n"]), "team": df_html(sl["by_team"]), "user": df_html(sl["by_user"]),
-        "base": df_html(sl["by_base"]), "chart_conc": sl["chart_conc"],
+        "base": df_html(sl["by_base"]), "model": df_html(sl["by_model"]), "chart_conc": sl["chart_conc"],
         "by_size": df_html(sl["by_size"]), "contention": df_html(sl["contention"]), "verdict": sl["verdict"],
         "key_conc": df_html(sl["key_conc"]), "top": df_html(sl["top"]),
         "rq": {k: df_html(v) for k, v in sl["rq_tables"].items()}, "rq_verdict": sl["rq_verdict"],
@@ -803,11 +916,12 @@ def build(per: Period) -> Path:
         notes.insert(0, {**sl["rq_verdict"], "stack": "écriture"})
 
     kpis = _kpis(gw, sl)
+    synth = syn.build(synth_context(gw, eng, dcd, sl))
 
     env = Environment(loader=FileSystemLoader(Path(__file__).parent), autoescape=select_autoescape(["html"]))
     html = env.get_template("template.html.j2").render(
         period=per.label, generated=datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
-        kpis=kpis, notes=notes, slo_ttft=SLO_TTFT, slo_itl=SLO_ITL, anonymized=ANONYMIZE,
+        kpis=kpis, notes=notes, synth=synth, glossaire=syn.GLOSSAIRE, coverage=coverage_note(gw), slo_ttft=SLO_TTFT, slo_itl=SLO_ITL, anonymized=ANONYMIZE,
         gw={"team": df_html(gw["by_team"]), "user": df_html(gw["by_user"]),
             "chart_daily": gw["chart_daily"], "chart_heatmap": gw["chart_heatmap"]},
         eng={"table": df_html(eng["table"]), "chart_conc": eng["chart_conc"], "chart_kv": eng["chart_kv"],
@@ -833,6 +947,7 @@ def build(per: Period) -> Path:
         write_csv(per, "spendlogs_par_team", sl["by_team"])
         write_csv(per, "spendlogs_par_utilisateur", sl["by_user"])
         write_csv(per, "spendlogs_par_stack", sl["by_base"])
+        write_csv(per, "spendlogs_par_modele", sl["by_model"])
         write_csv(per, "hypothese_ttft_par_taille", sl["by_size"])
         write_csv(per, "hypothese_petites_requetes", sl["contention"])
         write_csv(per, "concurrence_par_cle", sl["key_conc"])

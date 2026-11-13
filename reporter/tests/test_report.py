@@ -73,6 +73,12 @@ def _eng(itl, pic):
                           "% temps KV>90%": 0.0, "Préemptions": 0, "Hit prefix": 0.9}])
 
 
+@pytest.fixture(autouse=True)
+def _slo_itl_strict(monkeypatch):
+    # SLO « académique » de 100 ms : les cas ci-dessous (140 ms) le dépassent ; le défaut réel est 0,2 s
+    monkeypatch.setattr(rp, "SLO_ITL", 0.10)
+
+
 def _itl_note(itl, pic):
     notes = rp.diagnose({"table": _eng(itl, pic)}, {"by_user": pd.DataFrame()}, None)
     return [n for n in notes if "ITL" in n["txt"] and "SLO" in n["txt"]]

@@ -25,11 +25,20 @@ Grafana : http://127.0.0.1:3000 (tunnel SSH, ou `BIND_ADDR` dans `.env`), dossie
 > réseau, définir `BIND_ADDR=<IP de l'interface d'admin>` dans `.env`. L'anonymisation du rapport est
 > désormais activée par défaut.
 
+## Synthèse pour la direction
+
+Le rapport s'ouvre sur une synthèse en langage courant, en cinq questions : le service est-il utilisé ?
+fiable ? les très gros usages gênent-ils les autres ? l'infrastructure est-elle bien dimensionnée ? que propose-t-on ?
+Chaque chiffre est comparé à la période précédente de même durée, si Prometheus en a l'historique complet
+(sinon la synthèse le signale). Elle couvre aussi l'adoption (nouveaux utilisateurs, utilisateurs réguliers,
+part des personnes ayant accès si `TARGET_USERS` est renseigné dans `.env`), la disponibilité des serveurs
+et l'usage par modèle. Une donnée absente donne une phrase qui le dit, jamais un chiffre par défaut.
+
 ## Ce qui tranche l'hypothèse
 
 | Où | Quoi | Pourquoi |
 |---|---|---|
-| Dashboard SpendLogs, section du haut · rapport | TTFT des **petites** requêtes avec / sans gros prompt d'une autre clé en lecture sur la même stack | Le test causal : un écart net confirme, aucun écart infirme. Verdict automatique (≥ 30 requêtes de chaque côté) |
+| Dashboard SpendLogs, section du haut · rapport | TTFT des **petites** requêtes avec / sans gros prompt d'une autre clé en lecture sur la même stack | Le test causal, **à affluence égale** (même stack, même heure du même jour) : les gros prompts arrivant surtout aux heures de pointe, une comparaison brute leur attribuerait la lenteur due à l'affluence. Verdict avec intervalle de confiance et part des requêtes touchées (≥ 30 requêtes comparables de chaque côté). Un gros prompt servi par le cache (premier token < 20 s) n'est pas compté comme une lecture |
 | idem | TTFT par taille de prompt | Le TTFT global mélange la lenteur normale des gros prompts et celle subie par les petits |
 | Dashboard vLLM · rapport | **Sonde témoin** : petite requête fixe chaque minute par cible | L'expérience d'un utilisateur ordinaire, indépendante du mélange de trafic, comparable avant / après |
 | Dashboard SpendLogs · rapport | Requêtes simultanées **par clé**, minutes au-dessus de 2 / 3 / 4 | Dimensionner `max_parallel_requests` sur des faits |
