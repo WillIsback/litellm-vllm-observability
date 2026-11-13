@@ -115,3 +115,55 @@ def test_gene_pendant_l_ecriture_et_api_base_normalisee_par_le_rapport():
     assert s["gros_en_cours"].tolist() == [True]
     table, _ = hyp.contention(df, SMALL, LARGE)
     assert table.loc[1, "Durée p95 (s)"] > 100
+
+
+# --- facteur de confusion : les gros prompts arrivent aux heures de pointe -----------------------
+def _journees(effet_gros: float, jours: int = 15):
+    """Petites requêtes plus lentes aux heures de pointe (×4, affluence) ; gros prompts uniquement à ces heures.
+    effet_gros : multiplicateur réel du TTFT des petites requêtes pendant la lecture d'un gros prompt."""
+    import numpy as np
+    rng = np.random.default_rng(1)
+    rows = []
+    for j in range(jours):
+        for h in range(8, 19):
+            pointe = h in (10, 14)
+            base = j * 86400 + (h - 10) * 3600
+            heavy = [base + 600, base + 2400] if pointe else []
+            for s0 in heavy:
+                rows.append(req(s0, 300, 360, 200_000, "lourd"))
+            for i in range(20):
+                s0 = base + float(rng.uniform(0, 3600))
+                pendant = any(h0 <= s0 < h0 + 300 for h0 in heavy)
+                ttft = float(rng.lognormal(np.log(4.0 if pointe else 1.0), 0.3)) * (effet_gros if pendant else 1)
+                rows.append(req(s0, ttft, ttft + 10, 1000, f"k{i % 7}"))
+    return frame(rows)
+
+
+def test_affluence_seule_ne_confirme_pas_l_hypothese():
+    table, v = hyp.contention(_journees(effet_gros=1.0), SMALL, LARGE)
+    assert table.loc[1, "TTFT p50 (s)"] / table.loc[0, "TTFT p50 (s)"] > 2   # la comparaison brute tromperait
+    assert "CONFIRMÉE" not in v["txt"].replace("NON CONFIRMÉE", "")
+    assert v["lvl"] == "ok"
+    assert "affluence" in v["txt"]
+    assert v["ci"][0] < 1 < v["ci"][1] or abs(v["ratio_p50"] - 1) < 0.2
+
+
+def test_vrai_effet_detecte_malgre_l_affluence():
+    _, v = hyp.contention(_journees(effet_gros=3.0), SMALL, LARGE)
+    assert v["lvl"] == "warn"
+    assert "CONFIRMÉE" in v["txt"]
+    assert 2.2 < v["ratio_p50"] < 4
+    assert v["ci"][0] > 1
+    assert 0 < v["exposure"] < 0.3
+
+
+def test_gros_prompt_servi_par_le_cache_n_est_pas_une_lecture():
+    df = frame([req(0, 3, 40, 500_000, "lourd"),       # premier token en 3 s : contexte en cache
+                req(1, 0.5, 5, 500, "victime")])
+    assert not hyp.heavy_in_flight(df, SMALL, LARGE)["gros_en_cours"].any()
+
+
+def test_tranches_ne_comptent_pas_aucun_comme_utilisateur():
+    rows = [req(0, 0.4, 2, 1000, "a", user="(aucun)"), req(5, 0.6, 2, 3000, "b", user="alice")]
+    t = hyp.ttft_by_bucket(frame(rows), SMALL, LARGE).set_index("Taille du prompt")
+    assert t.loc["< 8k", "Utilisateurs"] == 1

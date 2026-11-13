@@ -6,6 +6,7 @@ api_base, key_id (hash de la clé, jamais affiché), user_, key_alias (déjà an
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 # Noms de colonnes réutilisés dans plusieurs tableaux (évite les littéraux dupliqués).
@@ -33,7 +34,7 @@ def ttft_by_bucket(df: pd.DataFrame, small: int, large: int) -> pd.DataFrame:
     tot = d["prompt_tokens"].sum()
     return pd.DataFrame({
         REQUETES: g.size(),
-        "Utilisateurs": g["user_"].nunique(),
+        "Utilisateurs": d[d["user_"] != "(aucun)"].groupby("tranche", observed=False)["user_"].nunique(),
         "Part tokens in": g["prompt_tokens"].sum() / tot if tot else 0,
         TTFT_P50: g["ttft"].median(),
         TTFT_P95: g["ttft"].quantile(0.95),
@@ -41,11 +42,20 @@ def ttft_by_bucket(df: pd.DataFrame, small: int, large: int) -> pd.DataFrame:
     }).reset_index().rename(columns={"tranche": "Taille du prompt"})
 
 
+# Lecture réellement calculée : un gros prompt servi par le cache de préfixe donne son premier token
+# en quelques secondes et ne gêne personne. Même seuil que l'analyse d'écriture (decode.HEAVY_PREFILL_S).
+HEAVY_PREFILL_S = 20
+MIN_SAMPLES = 30
+N_BOOT = 400
+
+
 def heavy_in_flight(df: pd.DataFrame, small: int, large: int) -> pd.DataFrame:
     """Petites requêtes streamées, marquées si un gros prompt d'une AUTRE clé était en lecture
-    (entre son début et son premier token) sur la même stack pendant qu'elles étaient en cours."""
+    (entre son début et son premier token) sur la même stack pendant qu'elles étaient en cours.
+    Un gros prompt dont le premier token arrive en moins de HEAVY_PREFILL_S (cache) n'est pas une lecture."""
     small_rq = df[(df["prompt_tokens"] < small) & df["ttft"].notna()].copy()
     heavy = df[df["prompt_tokens"] >= large]
+    heavy = heavy[~(heavy["ttft"].notna() & (heavy["ttft"] < HEAVY_PREFILL_S))]
     flag = pd.Series(False, index=small_rq.index)
     for h in heavy.itertuples():
         prefill_end = h.first_tok if pd.notna(h.first_tok) and h.first_tok > h.start else h.end_
@@ -55,8 +65,47 @@ def heavy_in_flight(df: pd.DataFrame, small: int, large: int) -> pd.DataFrame:
     return small_rq
 
 
+def stratified_effect(s: pd.DataFrame, n_boot: int = N_BOOT, seed: int = 0) -> dict:
+    """Effet des gros prompts à affluence comparable.
+
+    Les gros prompts arrivent surtout aux heures chargées, où tout est plus lent pour d'autres raisons :
+    comparer « avec » et « sans » sur tout le mois attribue aux gros prompts la lenteur due à l'affluence.
+    On compare donc à l'intérieur d'une même strate (même stack, même heure du même jour) : chaque TTFT est
+    divisé par le TTFT médian des petites requêtes SANS gros prompt de sa strate, puis on agrège.
+    Intervalle de confiance à 90 % par bootstrap sur les strates."""
+    s = s.assign(strate=s["api_base"].astype(str) + "|" + s["start"].dt.floor("h").astype(str))
+    flag = s["gros_en_cours"]
+    ref = s[~flag].groupby("strate")["ttft"].median()
+    both = set(ref.index) & set(s.loc[flag, "strate"])
+    m = s[s["strate"].isin(both)].copy()
+    m["rel"] = m["ttft"] / m["strate"].map(ref).clip(lower=1e-3)
+    w, wo = m.loc[m["gros_en_cours"], "rel"], m.loc[~m["gros_en_cours"], "rel"]
+    out = {"n_with": len(w), "n_without": len(wo), "strata": len(both),
+           "exposure": float(flag.mean()) if len(s) else 0.0,
+           "r50": None, "r95": None, "ci": (None, None)}
+    if len(w) < MIN_SAMPLES or len(wo) < MIN_SAMPLES:
+        return out
+
+    def ratios(a, b):
+        return (np.median(a) / max(np.median(b), 1e-6), np.quantile(a, 0.95) / max(np.quantile(b, 0.95), 1e-6))
+
+    out["r50"], out["r95"] = ratios(w.to_numpy(), wo.to_numpy())
+    groups = [(g.loc[g["gros_en_cours"], "rel"].to_numpy(), g.loc[~g["gros_en_cours"], "rel"].to_numpy())
+              for _, g in m.groupby("strate")]
+    rng = np.random.default_rng(seed)
+    boots = []
+    for _ in range(n_boot):
+        pick = rng.integers(len(groups), size=len(groups))
+        a = np.concatenate([groups[i][0] for i in pick])
+        b = np.concatenate([groups[i][1] for i in pick])
+        boots.append(np.median(a) / max(np.median(b), 1e-6))
+    out["ci"] = (float(np.quantile(boots, 0.05)), float(np.quantile(boots, 0.95)))
+    return out
+
+
 def contention(df: pd.DataFrame, small: int, large: int) -> tuple[pd.DataFrame, dict]:
-    """Compare le TTFT des petites requêtes avec / sans gros prompt en lecture. Renvoie (table, verdict)."""
+    """Compare le TTFT des petites requêtes avec / sans gros prompt en lecture. Renvoie (table, verdict).
+    La table donne les valeurs brutes ; le verdict repose sur la comparaison à affluence comparable."""
     s = heavy_in_flight(df, small, large)
     rows = []
     for flag, label in ((False, "Sans gros prompt en lecture"), (True, "Avec gros prompt en lecture")):
@@ -69,36 +118,46 @@ def contention(df: pd.DataFrame, small: int, large: int) -> tuple[pd.DataFrame, 
                      "Durée p50 (s)": d.median() if len(d) else None,
                      DUREE_P95: d.quantile(0.95) if len(d) else None})
     table = pd.DataFrame(rows)
-    return table, verdict(table)
+    return table, verdict(table, stratified_effect(s))
 
 
-MIN_SAMPLES = 30
-
-
-def verdict(table: pd.DataFrame) -> dict:
-    """Lecture prudente : il faut assez d'échantillons des deux côtés avant de conclure."""
+def _raw_ratio(table: pd.DataFrame) -> float | None:
     without, with_ = table.iloc[0], table.iloc[1]
-    n0, n1 = int(without[REQUETES]), int(with_[REQUETES])
-    if n0 < MIN_SAMPLES or n1 < MIN_SAMPLES:
-        return {"lvl": "info", "ratio_p50": None, "ratio_p95": None, "txt":
-                f"Pas encore assez d'échantillons pour conclure ({n0} petites requêtes sans gros prompt en lecture, "
-                f"{n1} avec ; il en faut au moins {MIN_SAMPLES} de chaque côté)."}
-    r50 = with_[TTFT_P50] / max(without[TTFT_P50], 1e-3)
-    r95 = with_[TTFT_P95] / max(without[TTFT_P95], 1e-3)
-    rd = with_[DUREE_P95] / max(without[DUREE_P95], 1e-3)
-    if r50 >= 2 or r95 >= 3:
-        return {"lvl": "warn", "ratio_p50": r50, "ratio_p95": r95, "txt":
-                f"Hypothèse CONFIRMÉE : quand un gros prompt d'un autre utilisateur est en lecture sur la même stack, "
-                f"le TTFT des petites requêtes est multiplié par {r50:.1f} (médiane) et {r95:.1f} (p95) "
-                f"(durée totale p95 ×{rd:.1f}) — {n1} requêtes concernées sur {n0 + n1}."}
+    if pd.isna(with_[TTFT_P50]) or pd.isna(without[TTFT_P50]):
+        return None
+    return with_[TTFT_P50] / max(without[TTFT_P50], 1e-3)
+
+
+def verdict(table: pd.DataFrame, st: dict) -> dict:
+    """Lecture prudente : assez d'échantillons comparables, intervalle de confiance, fréquence de la gêne."""
+    n_with_all = int(table.iloc[1][REQUETES])
+    base = {"ratio_p50": st["r50"], "ratio_p95": st["r95"], "ci": st["ci"], "exposure": st["exposure"],
+            "raw_ratio_p50": _raw_ratio(table)}
+    if st["r50"] is None:
+        return {**base, "lvl": "info", "txt":
+                f"Pas encore assez d'échantillons comparables pour conclure : {st['n_with']} petites requêtes avec gros "
+                f"prompt en lecture et {st['n_without']} sans, à la même heure sur la même stack "
+                f"({n_with_all} avec gros prompt au total) ; il en faut au moins {MIN_SAMPLES} de chaque côté."}
+    r50, r95, (lo, hi), exp = st["r50"], st["r95"], st["ci"], st["exposure"]
+    expo = f"{exp:.1%}".replace(".", ",")
+    ci = f"intervalle de confiance à 90 % sur la médiane : ×{lo:.1f} – ×{hi:.1f}"
+    raw = base["raw_ratio_p50"]
+    biais = (f" Sans cette correction, la comparaison brute aurait donné ×{raw:.1f} : l'écart vient de l'affluence, "
+             "pas des gros prompts." if raw and raw >= 1.3 and raw >= 1.5 * r50 else "")
+    if (r50 >= 2 or r95 >= 3) and lo > 1:
+        return {**base, "lvl": "warn", "txt":
+                f"Hypothèse CONFIRMÉE : à affluence comparable (même stack, même heure), quand un gros prompt d'un autre "
+                f"utilisateur est en lecture, le TTFT des petites requêtes est multiplié par {r50:.1f} (médiane) et "
+                f"{r95:.1f} (p95) ; {ci}. Cela touche {expo} des petites requêtes."}
     if r50 <= 1.3 and r95 <= 1.5:
-        return {"lvl": "ok", "ratio_p50": r50, "ratio_p95": r95, "txt":
-                f"Hypothèse NON CONFIRMÉE : le TTFT des petites requêtes ne change pas significativement quand un gros "
-                f"prompt est en lecture (×{r50:.1f} médiane, ×{r95:.1f} p95). Chercher la cause ailleurs "
-                "(concurrence globale, routage, décodage)."}
-    return {"lvl": "info", "ratio_p50": r50, "ratio_p95": r95, "txt":
-            f"Effet modéré : TTFT des petites requêtes ×{r50:.1f} (médiane) et ×{r95:.1f} (p95) quand un gros prompt "
-            "est en lecture. À recouper avec la sonde témoin et la concurrence par clé."}
+        return {**base, "lvl": "ok", "txt":
+                f"Hypothèse NON CONFIRMÉE : à affluence comparable, le TTFT des petites requêtes ne change pas "
+                f"significativement quand un gros prompt est en lecture (×{r50:.1f} médiane, ×{r95:.1f} p95 ; {ci})."
+                f"{biais} Chercher la cause ailleurs (concurrence globale, routage, décodage)."}
+    return {**base, "lvl": "info", "txt":
+            f"Effet modéré ou incertain : à affluence comparable, TTFT des petites requêtes ×{r50:.1f} (médiane) et "
+            f"×{r95:.1f} (p95) quand un gros prompt est en lecture ; {ci}. Touche {expo} des petites requêtes."
+            f"{biais} À recouper avec la sonde témoin et la concurrence par clé."}
 
 
 def per_minute_level(ev: pd.DataFrame) -> pd.Series:
