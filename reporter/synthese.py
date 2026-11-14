@@ -138,13 +138,18 @@ def dimensionnement(c: dict) -> dict:
     parts, lvl = [], "ok"
     if _ok(c.get("conc_max")):
         parts.append(f"Au plus fort, {num(c['conc_max'])} demandes ont été traitées en même temps.")
-    qs = c.get("queue_share")
+    qs = c.get("queue_share")  # part des DEMANDES qui ont attendu une place (pas la part du temps)
     if _ok(qs):
         if qs < 0.01:
             parts.append("Les demandes n'ont pratiquement jamais eu à attendre leur tour.")
         else:
-            parts.append(f"Des demandes ont dû attendre leur tour {pct(qs, 0 if qs >= 0.1 else 1)} du temps"
-                         + (f" sur le serveur {c['queue_stack']}" if c.get("queue_stack") else "") + ".")
+            txt = (f"{pct(qs, 0 if qs >= 0.1 else 1)} des demandes ont dû attendre qu'une place se libère"
+                   + (f", surtout sur le serveur {c['queue_stack']}" if c.get("queue_stack") else ""))
+            qt = c.get("queue_time_share")
+            if _ok(qt) and qt < qs / 2:
+                txt += (f". L'attente n'existe pourtant que {pct(qt, 1)} du temps : elle se concentre aux heures "
+                        "où le service est le plus utilisé")
+            parts.append(txt + ".")
             if qs > 0.05:
                 lvl = "warn"
     if c.get("plateau"):

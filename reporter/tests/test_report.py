@@ -69,7 +69,7 @@ def test_anon_cle_prefixe_et_independant():
 # --- diagnostic ITL : la règle « batch trop gros » exige une concurrence réelle --
 def _eng(itl, pic):
     return pd.DataFrame([{"Stack": "s1", "Requêtes": 10, "ITL p95 (s)": itl, "Pic en cours": pic,
-                          "TTFT p95 (s)": 1.0, "% temps file": 0.0, "KV p95": 0.1,
+                          "TTFT p95 (s)": 1.0, rp.COL_Q_TIME: 0.0, "KV p95": 0.1,
                           "% temps KV>90%": 0.0, "Préemptions": 0, "Hit prefix": 0.9}])
 
 
@@ -109,3 +109,43 @@ def test_itl_concurrence_inconnue_reste_prudent():
     assert len(n) == 1
     assert n[0]["lvl"] == "warn"
     assert "inconnue" in n[0]["txt"]
+
+
+# --- file d'attente : part des requêtes, pas part du temps --------------------------------------
+def test_requetes_arrivees_pendant_une_file_par_serveur():
+    t0 = pd.Timestamp("2026-11-10 10:00", tz="Europe/Paris")
+    minutes = pd.date_range(t0, periods=5, freq="1min")
+    # file sur stack-b pendant la minute 10:01-10:02 (échantillon max_over_time[1m] pris à 10:02)
+    waiting = pd.DataFrame({"stack-a": [0, 0, 0, 0, 0], "stack-b": [0, 0, 2, 0, 0]}, index=minutes)
+    arrivals = pd.DataFrame({
+        "start": [t0 + pd.Timedelta(seconds=s) for s in (70, 90, 70, 200, 10)],
+        "api_base": ["http://b/v1/", "http://b/v1", "http://a/v1", "http://b/v1", "http://inconnu/v1"],
+    })
+    q = rp.queued_arrivals(arrivals, waiting, {"http://a/v1": "stack-a", "http://b/v1": "stack-b"})
+    assert q["n"] == 4                                    # api_base inconnu : hors calcul
+    assert q["share"] == 0.5                              # les 2 arrivées sur b entre 10:01 et 10:02
+    assert q["by_stack"] == {"stack-a": 0.0, "stack-b": 2 / 3}
+    assert q["count_by_stack"] == {"stack-a": 0, "stack-b": 2}
+
+
+def test_serveur_cite_est_celui_qui_a_fait_attendre_le_plus_de_demandes():
+    # stack-a : taux plus élevé mais peu de trafic ; stack-b : plus de demandes en attente au total
+    sl = {"conc": {"max": 3}, "regular_share": None, "small_ttft_p95": None, "verdict": None,
+          "queued": {"share": 0.1, "n": 1000, "by_stack": {"stack-a": 0.13, "stack-b": 0.09},
+                     "count_by_stack": {"stack-a": 31, "stack-b": 69}}}
+    gw = {"kpi": dict.fromkeys(["requests", "failures", "users"]), "kpi_prev": dict.fromkeys(["requests", "failures", "users"]),
+          "by_team": pd.DataFrame()}
+    c = rp.synth_context(gw, {"table": pd.DataFrame()}, {"summary": pd.DataFrame()}, sl)
+    assert c["queue_share"] == 0.1 and c["queue_stack"] == "stack-b"
+
+
+def test_file_sans_donnees_renvoie_none():
+    assert rp.queued_arrivals(pd.DataFrame(columns=["start", "api_base"]), pd.DataFrame(), {}) is None
+
+
+def test_diagnostic_juge_la_file_sur_les_requetes():
+    eng = _eng(0.05, 6).assign(**{rp.COL_Q_REQ: 0.10, rp.COL_Q_TIME: 0.016})
+    notes = rp.diagnose({"table": eng}, {"by_user": pd.DataFrame()}, None)
+    n = [x for x in notes if "place" in x["txt"]]
+    assert len(n) == 1 and n[0]["lvl"] == "warn"
+    assert "10% des requêtes ont attendu plus de 1 s" in n[0]["txt"] and "1.6% du temps" in n[0]["txt"]

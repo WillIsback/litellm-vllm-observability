@@ -72,6 +72,7 @@ h3{font-size:16px;margin:22px 0 8px}
 <h3>Par utilisateur et clé API</h3><div class="card">{{ gw.user|safe }}</div>
 
 <h2>2. Moteurs vLLM (par stack)</h2>
+<p class="muted">« % requêtes en attente &gt; 1 s » : part des requêtes que le serveur a fait attendre faute de place (sonde comprise). « % temps avec file (24 h/24) » : part du temps où une file existait, nuits et week-ends compris ; il sous-estime la gêne, car la file se forme aux heures chargées.</p>
 <div class="card">{{ eng.table|safe }}</div>
 <div class="card">{% if eng.chart_conc %}<img alt="Concurrence" src="data:image/png;base64,{{ eng.chart_conc }}">{% endif %}</div>
 <div class="card">{% if eng.chart_kv %}<img alt="KV cache" src="data:image/png;base64,{{ eng.chart_kv }}">{% endif %}</div>
