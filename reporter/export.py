@@ -87,13 +87,7 @@ def _time_cols(df: pd.DataFrame, col: str, prefix: str = "t") -> pd.DataFrame:
     return df
 
 
-def stack_names(p: rp.Prom) -> dict[str, str]:
-    """api_base (sans / final) -> nom du serveur, d'après les labels des cibles vLLM."""
-    try:
-        res = p.instant('group by (provider, api_base) (up{job="vllm"})', datetime.now(rp.TZ))
-    except Exception:  # noqa: BLE001
-        return {}
-    return {r["metric"].get("api_base", "").rstrip("/"): r["metric"].get("provider", "") for r in res}
+stack_names = rp.stack_names  # api_base -> nom du serveur (partagé avec le rapport)
 
 
 def requests_table(per: rp.Period, anon: rp.Anon, stacks: dict[str, str]) -> tuple[pd.DataFrame, str | None]:

@@ -55,9 +55,16 @@ def test_donnees_absentes_pas_de_chiffre_invente():
 def test_file_d_attente_et_croissance_proposent_une_action():
     c = {**COMPLET, "queue_share": 0.12}
     r = syn.dimensionnement(c)
-    assert r["lvl"] == "warn" and "12 % du temps" in r["txt"]
+    assert r["lvl"] == "warn" and "12 % des demandes ont dû attendre" in r["txt"]
     assert "anticiper une extension" in syn.build(c)[-1]["txt"]
 
 
 def test_taux_de_succes_compare_en_points():
     assert "+0,4 point" in syn.fiabilite(COMPLET)["txt"]
+
+
+def test_file_part_des_demandes_contrastee_avec_la_part_du_temps():
+    c = {**COMPLET, "queue_share": 0.105, "queue_time_share": 0.016}
+    t = syn.dimensionnement(c)["txt"]
+    assert "10 % des demandes ont dû attendre qu'une place se libère, surtout sur le serveur stack-b" in t
+    assert "que 1,6 % du temps" in t and "du temps" not in t.split("L'attente")[0]

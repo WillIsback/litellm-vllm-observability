@@ -64,6 +64,11 @@ COL_TOKENS_IN = "Tokens in"
 COL_TOKENS_OUT = "Tokens out"
 COL_TTFT_P50 = "TTFT p50 (s)"
 COL_TTFT_P95 = "TTFT p95 (s)"
+# File d'attente : la part du TEMPS avec file (24 h/24, nuits comprises) sous-estime la gêne, car la file se
+# forme aux heures chargées. L'indicateur de référence est la part des REQUÊTES qui ont attendu une place.
+COL_Q_REQ = "% requêtes en attente > 1 s"
+COL_Q_TIME = "% temps avec file (24 h/24)"
+QUEUE_WAIT_S = 1  # au-delà d'1 s en file, la requête a attendu une place (le reste est du temps d'ordonnancement)
 
 # --- noms de métriques (regex tolérantes aux changements de version) ---------
 M = {
@@ -393,13 +398,17 @@ def engine_section(p: Prom, per: Period) -> dict:
     def hq(q, key):
         return f"histogram_quantile({q}, sum by (le, provider) (increase({sel(key)}[{w}])))"
 
+    q_le = sel("queue", r'le=~"%s(\\.0)?"' % QUEUE_WAIT_S)  # Prometheus 3 écrit le="1.0"
+    q_inf = sel("queue", 'le="+Inf"')
     parts = [
         v(f"sum by (provider) (increase({sel('vreq')}[{w}]))", "Requêtes"),
         v(f"sum by (provider) (increase({sel('ptok')}[{w}]))", "Tokens prompt"),
         v(f"sum by (provider) (increase({sel('gtok')}[{w}]))", "Tokens générés"),
         v(f"max_over_time(sum by (provider) ({sel('running')})[{w}:1m])", "Pic en cours"),
         v(f"max_over_time(sum by (provider) ({sel('waiting')})[{w}:1m])", "Pic en attente"),
-        v(f"avg_over_time((sum by (provider) ({sel('waiting')}) > bool 0)[{w}:1m])", "% temps file"),
+        v(f"1 - sum by (provider) (increase({q_le}[{w}])) / clamp_min(sum by (provider) (increase({q_inf}[{w}])), 1)",
+          COL_Q_REQ),
+        v(f"avg_over_time((sum by (provider) ({sel('waiting')}) > bool 0)[{w}:1m])", COL_Q_TIME),
         v(f"quantile_over_time(0.95, max by (provider) ({sel('kv')})[{w}:1m])", "KV p95"),
         v(f"avg_over_time((max by (provider) ({sel('kv')}) > bool 0.9)[{w}:1m])", "% temps KV>90%"),
         v(f"sum by (provider) (increase({sel('preempt')}[{w}]))", "Préemptions"),
@@ -548,6 +557,37 @@ def decode_section(p: Prom, per: Period) -> dict:
             "chart": chart_decode(sat, inter), "minutes": len(d)}
 
 
+def stack_names(p: Prom) -> dict[str, str]:
+    """api_base (sans / final) -> nom du serveur, d'après les labels des cibles vLLM."""
+    try:
+        res = p.instant('group by (provider, api_base) (up{job="vllm"})', datetime.now(TZ))
+    except Exception:  # noqa: BLE001
+        return {}
+    return {r["metric"].get("api_base", "").rstrip("/"): r["metric"].get("provider", "") for r in res}
+
+
+def queued_arrivals(arrivals: pd.DataFrame, waiting: pd.DataFrame, names: dict[str, str]) -> dict | None:
+    """Part des requêtes d'usage arrivées pendant une minute où leur serveur avait une file.
+
+    arrivals : colonnes start (horodatage tz), api_base ; waiting : index minute, une colonne par serveur,
+    valeur = max de requêtes en attente sur la minute qui SE TERMINE à cet instant (max_over_time[1m]).
+    Les requêtes sans serveur connu (échec avant routage, api_base inconnu) sont hors du calcul."""
+    if arrivals is None or arrivals.empty or waiting is None or waiting.empty:
+        return None
+    stack = arrivals["api_base"].fillna("").str.rstrip("/").map(names)
+    key = arrivals["start"].dt.floor("min") + pd.Timedelta(minutes=1)
+    w = waiting.stack()
+    w.index.names = ["t", "stack"]
+    known = stack.notna() & stack.isin(waiting.columns)
+    if not known.any():
+        return None
+    idx = pd.MultiIndex.from_arrays([key[known], stack[known]])
+    queued = pd.Series(w.reindex(idx).fillna(0).to_numpy() > 0, index=stack[known].index)
+    g = queued.groupby(stack[known])
+    return {"share": float(queued.mean()), "n": int(known.sum()),
+            "by_stack": g.mean().to_dict(), "count_by_stack": g.sum().astype(int).to_dict()}
+
+
 # --- collecte SpendLogs ---------------------------------------------------------------
 def _spendlogs_connect() -> tuple[object | None, dict | None]:
     """Connexion à Postgres LiteLLM. Renvoie (connexion, erreur) ; (None, None) si non configuré."""
@@ -674,6 +714,7 @@ def spendlogs_section(per: Period, anon: Anon) -> dict | None:
     rq_tables = dec.request_tables(rq[rq.index.isin(usage.index)])
 
     out = {
+        "arrivals": usage[["start", "api_base"]],
         "n": len(usage), "by_team": by_team, "by_user": by_user, "by_base": by_base, "conc": conc,
         "by_size": hyp.ttft_by_bucket(usage, SMALL_PROMPT, LARGE_PROMPT),  # hors sonde et health-check
         "by_model": by_model, "regular_share": regular / len(days) if len(days) else None,
@@ -701,13 +742,18 @@ def diagnose(eng: dict, gw: dict, sl: dict | None) -> list[dict]:
         for _, r in t.iterrows():
             s = r["Stack"]
             g = lambda k: (None if pd.isna(r.get(k)) else r.get(k))  # noqa: E731
-            wait, kvp, kv90, pre = g("% temps file"), g("KV p95"), g("% temps KV>90%"), g("Préemptions")
+            qreq, qtime = g(COL_Q_REQ), g(COL_Q_TIME)
+            wait = qreq if qreq is not None else qtime
+            kvp, kv90, pre = g("KV p95"), g("% temps KV>90%"), g("Préemptions")
             ttft, itl, hit = g(COL_TTFT_P95), g("ITL p95 (s)"), g("Hit prefix")
             sat = False
             if wait is not None and wait > 0.05 and (kvp is None or kvp < 0.8):
                 sat = True
                 notes.append({"lvl": "warn", "stack": s, "txt":
-                    f"File d'attente présente {wait:.0%} du temps alors que le KV cache reste modéré (p95 {kvp or 0:.0%}) : "
+                    (f"{qreq:.0%} des requêtes ont attendu plus de {QUEUE_WAIT_S} s une place"
+                     + (f" (file présente {qtime:.1%} du temps, concentrée aux heures chargées)" if qtime is not None else "")
+                     if qreq is not None else f"File d'attente présente {qtime:.0%} du temps")
+                    + f" alors que le KV cache reste modéré (p95 {kvp or 0:.0%}) : "
                     "les places (--max-num-seqs) sont occupées. Avant d'en ajouter, vérifier qui les occupe (concurrence "
                     "par clé) et si de longues lectures les monopolisent : sur GB10, plus de places dégrade l'ITL de tous."})
             if (kv90 is not None and kv90 > 0.05) or (pre is not None and pre > 0):
@@ -788,10 +834,12 @@ def synth_context(gw: dict, eng: dict, dcd: dict, sl: dict | None) -> dict:
         if "Disponibilité" in t and t["Disponibilité"].notna().any():
             i = t["Disponibilité"].idxmin()
             c["availability"], c["availability_stack"] = t.at[i, "Disponibilité"], t.at[i, "Stack"]
-        if t["% temps file"].notna().any():
-            i = t["% temps file"].idxmax()
-            c["queue_share"] = t.at[i, "% temps file"]
+        if COL_Q_REQ in t and t[COL_Q_REQ].notna().any():
+            i = t[COL_Q_REQ].idxmax()
+            c["queue_share"] = t.at[i, COL_Q_REQ]
             c["queue_stack"] = t.at[i, "Stack"] if len(t) > 1 else None
+        if COL_Q_TIME in t and t[COL_Q_TIME].notna().any():
+            c["queue_time_share"] = t[COL_Q_TIME].max()
         if t["Pic en cours"].notna().any():
             c["conc_max"] = t["Pic en cours"].max()
     summ = dcd["summary"]
@@ -806,6 +854,12 @@ def synth_context(gw: dict, eng: dict, dcd: dict, sl: dict | None) -> dict:
         c["regular_share"] = sl["regular_share"]
         c["small_ttft_p95"] = sl["small_ttft_p95"]
         c["hyp"] = sl["verdict"]
+        q = sl.get("queued")
+        if q:  # exact, hors monitoring : remplace l'estimation de l'histogramme vLLM (qui inclut la sonde)
+            c["queue_share"] = q["share"]
+            # « surtout sur le serveur X » : celui où le plus de demandes ont attendu (pas le taux le plus élevé)
+            cnt = {k: v for k, v in q["count_by_stack"].items() if v > 0}
+            c["queue_stack"] = max(cnt, key=cnt.get) if len(q["count_by_stack"]) > 1 and cnt else None
         if c["success_rate"] is None and sl.get("fail_rate") is not None:
             c["success_rate"] = 1 - sl["fail_rate"]
     return c
@@ -910,6 +964,10 @@ def build(per: Period) -> Path:
     dcd = decode_section(p, per)
     print("· SpendLogs…")
     sl = spendlogs_section(per, anon)
+    if sl and "error" not in sl:
+        waiting = p.range_df_chunked(f"max by (provider) (max_over_time({sel('waiting')}[1m]))",
+                                     per.start, per.end, 60, "provider")
+        sl["queued"] = queued_arrivals(sl["arrivals"], waiting, stack_names(p))
     notes = diagnose(eng, gw, sl if sl and "error" not in sl else None)
     if dcd["verdict"]:
         notes.insert(0, {**dcd["verdict"], "stack": "écriture"})
